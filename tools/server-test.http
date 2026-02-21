@@ -1,0 +1,73 @@
+### ========================================
+### Management API (via HTTP adapter, port 8080)
+### ========================================
+
+### Health check
+GET http://localhost:8080/api/health
+
+### List all adapters (available + running)
+GET http://localhost:8080/api/adapters
+
+### List only available (not yet loaded) adapters
+GET http://localhost:8080/api/adapters/available
+
+### Node status (detailed info for orchestrator)
+GET http://localhost:8080/api/node/status
+
+### Connect RabbitMQ adapter
+POST http://localhost:8080/api/adapters/rabbit
+Content-Type: application/json
+
+{
+    "host": "188.242.193.152",
+    "port": 5672,
+    "user": "nelos",
+    "password": "nelos",
+    "vhost": "/",
+    "connectionTimeoutSec": 10
+}
+
+### Disconnect RabbitMQ adapter
+DELETE http://localhost:8080/api/adapters/rabbit
+
+### Connect HTTP adapter on a different port
+POST http://localhost:8080/api/adapters/http
+Content-Type: application/json
+
+{
+    "port": 9090,
+    "register_url": "",
+    "registration_timeout_sec": 10
+}
+
+### Disconnect second HTTP adapter
+DELETE http://localhost:8080/api/adapters/http
+
+### ========================================
+### Test API (via HTTP adapter, port 8080)
+### ========================================
+
+### Run correctness tests
+POST http://localhost:8080/api/run
+Content-Type: application/json
+
+{
+    "test_id": "parallel-qsort",
+    "test_dir": "C:/Users/Nelos/Desktop/Diploma/C-tests-runner/tests/parallel-qsort",
+    "solution_dir": "C:/Users/Nelos/Desktop/Diploma/C-tests-runner/solution",
+    "mode": "correctness",
+    "threads": 32
+}
+
+> {%
+    client.global.set("cached_job_id", response.body.job_id);
+%}
+
+### Get job result
+GET http://localhost:8080/api/jobs/{{cached_job_id}}
+
+### System status (queue overview)
+GET http://localhost:8080/api/status
+
+### Cancel a job
+DELETE http://localhost:8080/api/jobs/{{correctness_job_id}}
