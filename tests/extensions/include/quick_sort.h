@@ -6,5 +6,5 @@
 
 
 namespace parallel {
-        void qsort(std::vector<int>& array);
+    void qsort(std::vector<int> & array);
 }
