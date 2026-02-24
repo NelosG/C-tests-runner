@@ -21,10 +21,12 @@ class BuildService {
             std::string engine_include_path;
             std::string parallel_lib_path;
             std::string parallel_include_path;
+            std::string memory_inject_path;  ///< Path to memory_limit_inject.cpp for student DLLs.
             std::string cmake_executable;
             std::string generator;
             std::string exe_dir;
             int correctness_workers = 4;
+            long long default_memory_limit_mb = 1024;  ///< Per-job memory limit default (MB), 0 = unlimited.
         };
 
         /** @brief Result of building test plugins against the student DLL. */

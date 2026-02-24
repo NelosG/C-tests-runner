@@ -1,3 +1,4 @@
+#include <api_types.h>
 #include <iostream>
 #include <job_queue.h>
 #include <random>
@@ -45,7 +46,7 @@ std::string JobQueue::submit(nlohmann::json request, CompletionCallback on_compl
         job_id = generateJobId();
         request["jobId"] = job_id;
     }
-    const std::string mode = request.value("mode", "correctness");
+    const std::string mode = request.value("mode", to_string(test_mode::correctness));
 
     std::lock_guard lock(mutex_);
 
@@ -53,7 +54,7 @@ std::string JobQueue::submit(nlohmann::json request, CompletionCallback on_compl
 
     JobInfo info;
     info.job_id = job_id;
-    info.status = JobStatus::QUEUED;
+    info.status = job_status::queued;
     info.request = std::move(request);
     info.submitted_at = std::chrono::steady_clock::now();
 
@@ -62,7 +63,7 @@ std::string JobQueue::submit(nlohmann::json request, CompletionCallback on_compl
     }
 
     // mode "all" and "performance" both need exclusive CPU access
-    if(mode == "performance" || mode == "all") {
+    if(mode == to_string(test_mode::performance) || mode == to_string(test_mode::all)) {
         info.queue_position = static_cast<int>(performance_queue_.size()) + 1;
         jobs_[job_id] = std::move(info);
         performance_queue_.push_back(job_id);
@@ -86,9 +87,9 @@ bool JobQueue::cancel(const std::string& job_id) {
 
     auto it = jobs_.find(job_id);
     if(it == jobs_.end()) return false;
-    if(it->second.status != JobStatus::QUEUED) return false;
+    if(it->second.status != job_status::queued) return false;
 
-    it->second.status = JobStatus::CANCELLED;
+    it->second.status = job_status::cancelled;
     it->second.queue_position = -1;
     it->second.finished_at = std::chrono::steady_clock::now();
 
@@ -121,7 +122,7 @@ nlohmann::json JobQueue::getStatus() const {
 
     nlohmann::json status;
     bool busy = perf_running_ || active_correctness_ > 0;
-    status["status"] = busy ? "busy" : "idle";
+    status["status"] = to_string(busy ? queue_status::busy : queue_status::idle);
     status["correctnessQueueSize"] = correctness_queue_.size();
     status["performanceQueueSize"] = performance_queue_.size();
     status["activeCorrectness"] = active_correctness_;
@@ -134,17 +135,31 @@ nlohmann::json JobQueue::getStatus() const {
 
     auto jobs_arr = nlohmann::json::array();
 
+    // Helper: extract common fields from a job entry
+    auto job_entry = [&](const JobInfo& job, const std::string& lane, int position = 0) {
+        nlohmann::json entry = {
+            {"jobId", job.job_id},
+            {"status", to_string(job.status)},
+            {"lane", lane}
+        };
+        if(position > 0) entry["position"] = position;
+
+        if(!job.request.is_null()) {
+            entry["mode"] = job.request.value("mode", to_string(test_mode::correctness));
+            std::string sol_dir = job.request.value("solutionDir", "");
+            if(!sol_dir.empty()) {
+                auto pos = sol_dir.find_last_of("/\\");
+                entry["solution"] = (pos != std::string::npos) ? sol_dir.substr(pos + 1) : sol_dir;
+            }
+        }
+        return entry;
+    };
+
     // Currently running perf job
     if(!current_perf_job_id_.empty()) {
         auto it = jobs_.find(current_perf_job_id_);
         if(it != jobs_.end()) {
-            jobs_arr.push_back(
-                {
-                    {"jobId", it->second.job_id},
-                    {"status", statusToString(it->second.status)},
-                    {"lane", "performance"}
-                }
-            );
+            jobs_arr.push_back(job_entry(it->second, "performance"));
         }
     }
 
@@ -152,14 +167,7 @@ nlohmann::json JobQueue::getStatus() const {
     for(size_t i = 0; i < correctness_queue_.size(); ++i) {
         auto it = jobs_.find(correctness_queue_[i]);
         if(it != jobs_.end()) {
-            jobs_arr.push_back(
-                {
-                    {"jobId", it->second.job_id},
-                    {"status", statusToString(it->second.status)},
-                    {"lane", "correctness"},
-                    {"position", static_cast<int>(i) + 1}
-                }
-            );
+            jobs_arr.push_back(job_entry(it->second, "correctness", static_cast<int>(i) + 1));
         }
     }
 
@@ -167,14 +175,7 @@ nlohmann::json JobQueue::getStatus() const {
     for(size_t i = 0; i < performance_queue_.size(); ++i) {
         auto it = jobs_.find(performance_queue_[i]);
         if(it != jobs_.end()) {
-            jobs_arr.push_back(
-                {
-                    {"jobId", it->second.job_id},
-                    {"status", statusToString(it->second.status)},
-                    {"lane", "performance"},
-                    {"position", static_cast<int>(i) + 1}
-                }
-            );
+            jobs_arr.push_back(job_entry(it->second, "performance", static_cast<int>(i) + 1));
         }
     }
 
@@ -182,28 +183,16 @@ nlohmann::json JobQueue::getStatus() const {
     return status;
 }
 
-std::string JobQueue::statusToString(JobStatus s) {
-    switch(s) {
-        case JobStatus::QUEUED: return "queued";
-        case JobStatus::BUILDING: return "building";
-        case JobStatus::RUNNING: return "running";
-        case JobStatus::COMPLETED: return "completed";
-        case JobStatus::FAILED: return "failed";
-        case JobStatus::CANCELLED: return "cancelled";
-    }
-    return "unknown";
-}
-
 void JobQueue::cleanupOldJobs() {
     auto now = std::chrono::steady_clock::now();
     auto threshold = std::chrono::seconds(job_retention_sec_);
     int removed = 0;
 
-    for(auto it = jobs_.begin(); it != jobs_.end(); ) {
+    for(auto it = jobs_.begin(); it != jobs_.end();) {
         auto& info = it->second;
-        bool is_terminal = info.status == JobStatus::COMPLETED
-                        || info.status == JobStatus::FAILED
-                        || info.status == JobStatus::CANCELLED;
+        bool is_terminal = info.status == job_status::completed
+            || info.status == job_status::failed
+            || info.status == job_status::cancelled;
 
         if(is_terminal && (now - info.finished_at) > threshold) {
             callbacks_.erase(it->first);
@@ -235,10 +224,10 @@ void JobQueue::executeJob(const std::string& job_id) {
         request = jobs_[job_id].request;
     }
 
-    std::string mode = request.value("mode", "correctness");
+    std::string mode = request.value("mode", to_string(test_mode::correctness));
     std::cout << "[JobQueue] " << job_id << " started (mode=" << mode << ")\n";
 
-    auto status_updater = [this, job_id](JobStatus new_status) {
+    auto status_updater = [this, job_id](job_status new_status) {
         std::lock_guard lock(mutex_);
         jobs_[job_id].status = new_status;
     };
@@ -249,7 +238,7 @@ void JobQueue::executeJob(const std::string& job_id) {
 
         std::lock_guard lock(mutex_);
         auto& info = jobs_[job_id];
-        info.status = JobStatus::COMPLETED;
+        info.status = job_status::completed;
         info.result = result;
         info.queue_position = -1;
         info.finished_at = std::chrono::steady_clock::now();
@@ -262,7 +251,7 @@ void JobQueue::executeJob(const std::string& job_id) {
     } catch(const std::exception& e) {
         std::lock_guard lock(mutex_);
         auto& info = jobs_[job_id];
-        info.status = JobStatus::FAILED;
+        info.status = job_status::failed;
         info.error = e.what();
         info.queue_position = -1;
         info.finished_at = std::chrono::steady_clock::now();
@@ -270,7 +259,7 @@ void JobQueue::executeJob(const std::string& job_id) {
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             info.finished_at - info.started_at
         ).count();
-        final_result = {{"jobId", job_id}, {"status", "failed"}, {"error", e.what()}};
+        final_result = {{"jobId", job_id}, {"status", to_string(job_status::failed)}, {"error", e.what()}};
         std::cerr << "[JobQueue] " << job_id << " failed (" << elapsed << "ms): " << e.what() << "\n";
     }
 
@@ -285,8 +274,7 @@ void JobQueue::executeJob(const std::string& job_id) {
         }
     }
     if(cb) {
-        try { cb(final_result); }
-        catch(const std::exception& e) {
+        try { cb(final_result); } catch(const std::exception& e) {
             std::cerr << "[JobQueue] Completion callback error for " << job_id << ": " << e.what() << "\n";
         }
     }
@@ -336,18 +324,20 @@ void JobQueue::correctnessWorkerLoop() {
                 lock,
                 [this]() {
                     return stop_ || drain_count_ > 0 ||
-                        (!correctness_queue_.empty() && !perf_running_
-                         && performance_queue_.empty());
+                        (!correctness_queue_.empty() && !perf_running_);
                 }
             );
 
-            if(drain_count_ > 0 && correctness_queue_.empty()) {
+            if(drain_count_ > 0) {
                 --drain_count_;
                 return;
             }
-            if(stop_ && correctness_queue_.empty()) return;
-            if(correctness_queue_.empty() || perf_running_
-               || !performance_queue_.empty()) continue;
+            if(stop_&& correctness_queue_
+            .
+            empty()
+            )
+            return;
+            if(correctness_queue_.empty() || perf_running_) continue;
 
             job_id = correctness_queue_.front();
             correctness_queue_.pop_front();
@@ -355,7 +345,7 @@ void JobQueue::correctnessWorkerLoop() {
             updateQueuePositions();
 
             auto& info = jobs_[job_id];
-            info.status = JobStatus::BUILDING;
+            info.status = job_status::building;
             info.queue_position = 0;
             info.started_at = std::chrono::steady_clock::now();
         }
@@ -385,7 +375,11 @@ void JobQueue::performanceWorkerLoop() {
                 }
             );
 
-            if(stop_ && performance_queue_.empty()) return;
+            if(stop_&& performance_queue_
+            .
+            empty()
+            )
+            return;
             if(performance_queue_.empty() || active_correctness_ != 0 || perf_running_) continue;
 
             job_id = performance_queue_.front();
@@ -395,7 +389,7 @@ void JobQueue::performanceWorkerLoop() {
             updateQueuePositions();
 
             auto& info = jobs_[job_id];
-            info.status = JobStatus::BUILDING;
+            info.status = job_status::building;
             info.queue_position = 0;
             info.started_at = std::chrono::steady_clock::now();
         }

@@ -149,8 +149,8 @@ namespace par {
                 // Enforce thread count override before every parallel region
                 if(c->max_threads > 0) {
                     omp_set_num_threads(c->max_threads);
+                    omp_set_dynamic(0);
                 }
-                omp_set_dynamic(0);
 
                 if(c->mode != Mode::NORMAL) {
                     c->stats.parallel_regions.fetch_add(1, std::memory_order_relaxed);

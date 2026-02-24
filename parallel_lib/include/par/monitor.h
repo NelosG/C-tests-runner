@@ -49,8 +49,9 @@ namespace par {
         std::atomic<int> taskyields{0};
         std::atomic<int> max_threads_observed{0};
 
-        std::atomic<long long> work_ns{0};
-        std::atomic<long long> span_ns{0};
+        // Hot timing counters on separate cache lines to avoid false sharing
+        alignas(64) std::atomic<long long> work_ns{0};
+        alignas(64) std::atomic<long long> span_ns{0};
     };
 
     /**

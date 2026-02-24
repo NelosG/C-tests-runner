@@ -94,6 +94,7 @@
 
 #include <omp.h>
 #include <par/monitor.h>
+#include <par/memory_guard.h>
 
 
 // ============================================================
@@ -108,111 +109,117 @@
 //  RAII guard structs (used internally by macros)
 // ============================================================
 
-namespace par { namespace macro {
+namespace par {
+    namespace macro {
 
-    /**
+        /**
      * Wraps onParallelBegin() / onParallelEnd() around a parallel region.
      * Used by OMP_PARALLEL via a for-loop trick.
      */
-    struct ParallelGuard {
-        MonitorContext* ctx;
-        bool done = false;
+        struct ParallelGuard {
+            MonitorContext* ctx;
+            MemoryContext* mem_ctx;
+            bool done = false;
 
-        ParallelGuard()
-            : ctx(monitor::detail::currentContext())
-        {
-            monitor::detail::onParallelBegin();
-        }
+            ParallelGuard()
+                : ctx(monitor::detail::currentContext()),
+                  mem_ctx(memory::detail::currentContext()) {
+                monitor::detail::onParallelBegin();
+            }
 
-        void finalize() {
-            done = true;
-            monitor::detail::onParallelEnd();
-        }
-    };
+            void finalize() {
+                done = true;
+                monitor::detail::onParallelEnd();
+            }
+        };
 
-    /** Propagates the MonitorContext to each OMP thread. */
-    struct ThreadInit {
-        bool once = true;
+        /** Propagates the MonitorContext to each OMP thread. */
+        struct ThreadInit {
+            bool once = true;
 
-        explicit ThreadInit(const ParallelGuard& g) {
-            monitor::detail::setContext(g.ctx);
-        }
-    };
+            explicit ThreadInit(const ParallelGuard& g) {
+                monitor::detail::setContext(g.ctx);
+                memory::detail::setContext(g.mem_ctx);
+            }
+        };
 
-    /**
+        /**
      * Hooks for #pragma omp single: statistics + span root init/finalize.
      * Saves/restores outer span state to support nested parallel regions.
      */
-    struct SingleGuard {
-        bool once = true;
-        long long t0 = 0;
-        monitor::detail::SpanSaved outer_span;
+        struct SingleGuard {
+            bool once = true;
+            long long t0 = 0;
+            monitor::detail::SpanSaved outer_span;
 
-        SingleGuard() {
-            monitor::detail::onSingle();
-            outer_span = monitor::detail::spanSaveState();
-            monitor::detail::spanInitRoot();
-            t0 = monitor::detail::workBegin();
-        }
+            SingleGuard() {
+                monitor::detail::onSingle();
+                outer_span = monitor::detail::spanSaveState();
+                monitor::detail::spanInitRoot();
+                t0 = monitor::detail::workBegin();
+            }
 
-        ~SingleGuard() {
-            monitor::detail::workEnd(t0);
-            monitor::detail::spanFinalizeRoot();
-            monitor::detail::spanRestoreState(outer_span);
-        }
-    };
+            ~SingleGuard() {
+                monitor::detail::workEnd(t0);
+                monitor::detail::spanFinalizeRoot();
+                monitor::detail::spanRestoreState(outer_span);
+            }
+        };
 
-    /**
+        /**
      * Pre-task hook: statistics, delay injection, span child context.
      * Captures the monitor context for propagation into the task body.
      */
-    struct TaskPre {
-        bool done = false;
-        monitor::detail::SpanChildCtx span_ctx;
-        MonitorContext* ctx;
+        struct TaskPre {
+            bool done = false;
+            monitor::detail::SpanChildCtx span_ctx;
+            MonitorContext* ctx;
+            MemoryContext* mem_ctx;
 
-        TaskPre()
-            : ctx(monitor::detail::currentContext())
-        {
-            monitor::detail::onTaskCreate();
-            monitor::detail::maybeInjectDelay();
-            span_ctx = monitor::detail::spanPrepareChild();
-        }
-    };
+            TaskPre()
+                : ctx(monitor::detail::currentContext()),
+                  mem_ctx(memory::detail::currentContext()) {
+                monitor::detail::onTaskCreate();
+                monitor::detail::maybeInjectDelay();
+                span_ctx = monitor::detail::spanPrepareChild();
+            }
+        };
 
-    /** Task body hook: context propagation + span enter/exit + work timing. */
-    struct TaskBody {
-        bool once = true;
-        monitor::detail::SpanSaved span_saved;
-        monitor::detail::SpanChildCtx span_ctx;
-        long long t0 = 0;
+        /** Task body hook: context propagation + span enter/exit + work timing. */
+        struct TaskBody {
+            bool once = true;
+            monitor::detail::SpanSaved span_saved;
+            monitor::detail::SpanChildCtx span_ctx;
+            long long t0 = 0;
 
-        explicit TaskBody(const TaskPre& pre) : span_ctx(pre.span_ctx) {
-            monitor::detail::setContext(pre.ctx);
-            span_saved = monitor::detail::spanEnterTask(span_ctx);
-            t0 = monitor::detail::workBegin();
-        }
+            explicit TaskBody(const TaskPre& pre) : span_ctx(pre.span_ctx) {
+                monitor::detail::setContext(pre.ctx);
+                memory::detail::setContext(pre.mem_ctx);
+                span_saved = monitor::detail::spanEnterTask(span_ctx);
+                t0 = monitor::detail::workBegin();
+            }
 
-        ~TaskBody() {
-            monitor::detail::workEnd(t0);
-            monitor::detail::spanExitTask(span_saved, span_ctx);
-        }
-    };
+            ~TaskBody() {
+                monitor::detail::workEnd(t0);
+                monitor::detail::spanExitTask(span_saved, span_ctx);
+            }
+        };
 
-    /**
+        /**
      * Generic single-hook guard (for-loop trick, executes hook once).
      * MasterOnly=true filters to thread 0 only (for worksharing constructs
      * where all threads encounter the guard but we want to count once).
      */
-    template<void(*Hook)(), bool MasterOnly = false>
-    struct SimpleGuard {
-        bool once = true;
-        SimpleGuard() {
-            if (!MasterOnly || omp_get_thread_num() == 0) Hook();
-        }
-    };
+        template<void(*Hook)(), bool MasterOnly = false>
+        struct SimpleGuard {
+            bool once = true;
 
-    /**
+            SimpleGuard() {
+                if(!MasterOnly || omp_get_thread_num() == 0) Hook();
+            }
+        };
+
+        /**
      * Work-timed guard: calls counter hooks on construction, times work
      * via workBegin/workEnd. MasterOnly=true gates hooks to thread 0
      * (for worksharing constructs where all threads create the guard).
@@ -220,58 +227,62 @@ namespace par { namespace macro {
      * Taskloop/taskloop-simd use MasterOnly=false because they are
      * normally encountered by a single thread (inside OMP_SINGLE).
      */
-    template<bool MasterOnly, void(*...Hooks)()>
-    struct WorkTimedGuard {
-        bool once = true;
-        long long t0 = 0;
-        WorkTimedGuard() {
-            if (!MasterOnly || omp_get_thread_num() == 0) (Hooks(), ...);
-            t0 = monitor::detail::workBegin();
-        }
-        ~WorkTimedGuard() { monitor::detail::workEnd(t0); }
-    };
+        template<bool MasterOnly, void(* ...Hooks)()>
+        struct WorkTimedGuard {
+            bool once = true;
+            long long t0 = 0;
 
-    using ForGuard          = WorkTimedGuard<true, &monitor::detail::onForLoop>;
-    using SectionsGuard     = WorkTimedGuard<true, &monitor::detail::onSections>;
-    using ForSimdGuard      = WorkTimedGuard<true, &monitor::detail::onForLoop, &monitor::detail::onSimd>;
-    using TaskloopGuard     = WorkTimedGuard<false, &monitor::detail::onTaskCreate, &monitor::detail::onForLoop>;
-    using TaskloopSimdGuard = WorkTimedGuard<false, &monitor::detail::onTaskCreate, &monitor::detail::onForLoop, &monitor::detail::onSimd>;
+            WorkTimedGuard() {
+                if(!MasterOnly || omp_get_thread_num() == 0) (Hooks(), ...);
+                t0 = monitor::detail::workBegin();
+            }
 
-    using CriticalGuard  = SimpleGuard<&monitor::detail::onCritical>;
-    using MasterGuard    = SimpleGuard<&monitor::detail::onMaster>;
-    using OrderedGuard   = SimpleGuard<&monitor::detail::onOrdered, true>;
-    using SimdGuard      = SimpleGuard<&monitor::detail::onSimd>;
-    using TaskgroupGuard = SimpleGuard<&monitor::detail::onTaskgroup>;
-    using AtomicGuard    = SimpleGuard<&monitor::detail::onAtomic>;
+            ~WorkTimedGuard() { monitor::detail::workEnd(t0); }
+        };
 
-    /**
+        using ForGuard = WorkTimedGuard<true, &monitor::detail::onForLoop>;
+        using SectionsGuard = WorkTimedGuard<true, &monitor::detail::onSections>;
+        using ForSimdGuard = WorkTimedGuard<true, &monitor::detail::onForLoop, &monitor::detail::onSimd>;
+        using TaskloopGuard = WorkTimedGuard<false, &monitor::detail::onTaskCreate, &monitor::detail::onForLoop>;
+        using TaskloopSimdGuard = WorkTimedGuard<
+            false, &monitor::detail::onTaskCreate, &monitor::detail::onForLoop, &monitor::detail::onSimd>;
+
+        using CriticalGuard = SimpleGuard<&monitor::detail::onCritical>;
+        using MasterGuard = SimpleGuard<&monitor::detail::onMaster>;
+        using OrderedGuard = SimpleGuard<&monitor::detail::onOrdered, true>;
+        using SimdGuard = SimpleGuard<&monitor::detail::onSimd>;
+        using TaskgroupGuard = SimpleGuard<&monitor::detail::onTaskgroup>;
+        using AtomicGuard = SimpleGuard<&monitor::detail::onAtomic>;
+
+        /**
      * Combined parallel + work-sharing guard (variadic).
      * Calls onParallelBegin() + all ExtraHooks on construction,
      * onParallelEnd() on finalize. Used by OMP_PARALLEL_FOR / etc.
      */
-    template<void(*...ExtraHooks)()>
-    struct ParallelComboGuard {
-        MonitorContext* ctx;
-        bool done = false;
+        template<void(* ...ExtraHooks)()>
+        struct ParallelComboGuard {
+            MonitorContext* ctx;
+            MemoryContext* mem_ctx;
+            bool done = false;
 
-        ParallelComboGuard()
-            : ctx(monitor::detail::currentContext())
-        {
-            monitor::detail::onParallelBegin();
-            (ExtraHooks(), ...);
-        }
+            ParallelComboGuard()
+                : ctx(monitor::detail::currentContext()),
+                  mem_ctx(memory::detail::currentContext()) {
+                monitor::detail::onParallelBegin();
+                (ExtraHooks(), ...);
+            }
 
-        void finalize() {
-            done = true;
-            monitor::detail::onParallelEnd();
-        }
-    };
+            void finalize() {
+                done = true;
+                monitor::detail::onParallelEnd();
+            }
+        };
 
-    using ParallelForGuard      = ParallelComboGuard<&monitor::detail::onForLoop>;
-    using ParallelSectionsGuard = ParallelComboGuard<&monitor::detail::onSections>;
-    using ParallelForSimdGuard  = ParallelComboGuard<&monitor::detail::onForLoop, &monitor::detail::onSimd>;
+        using ParallelForGuard = ParallelComboGuard<&monitor::detail::onForLoop>;
+        using ParallelSectionsGuard = ParallelComboGuard<&monitor::detail::onSections>;
+        using ParallelForSimdGuard = ParallelComboGuard<&monitor::detail::onForLoop, &monitor::detail::onSimd>;
 
-    /**
+        /**
      * Context propagation + work timing for combined parallel constructs
      * (parallel for, parallel sections, parallel for simd).
      *
@@ -285,22 +296,28 @@ namespace par { namespace macro {
      *
      * Relies on the OpenMP guarantee that firstprivate copy-init runs on the new thread.
      */
-    struct CtxInit {
-        MonitorContext* ctx;
-        bool once = true;
-        long long t0 = 0;
+        struct CtxInit {
+            MonitorContext* ctx;
+            MemoryContext* mem_ctx;
+            bool once = true;
+            long long t0 = 0;
 
-        explicit CtxInit(MonitorContext* c) : ctx(c) {
-            t0 = monitor::detail::workBegin();
-        }
-        CtxInit(const CtxInit& o) : ctx(o.ctx), once(o.once), t0(0) {
-            monitor::detail::setContext(ctx);
-            t0 = monitor::detail::workBegin();
-        }
-        ~CtxInit() { if (t0 != 0) monitor::detail::workEnd(t0); }
-    };
+            explicit CtxInit(MonitorContext* c, MemoryContext* mc)
+                : ctx(c), mem_ctx(mc) {
+                t0 = monitor::detail::workBegin();
+            }
 
-}} // namespace par::macro
+            CtxInit(const CtxInit& o) : ctx(o.ctx), mem_ctx(o.mem_ctx), once(o.once), t0(0) {
+                monitor::detail::setContext(ctx);
+                memory::detail::setContext(mem_ctx);
+                t0 = monitor::detail::workBegin();
+            }
+
+            ~CtxInit() { if(t0 != 0) monitor::detail::workEnd(t0); }
+        };
+
+    }
+} // namespace par::macro
 
 
 // ============================================================
@@ -434,7 +451,7 @@ namespace par { namespace macro {
  */
 #define OMP_PARALLEL_FOR(...) \
     for (::par::macro::ParallelForGuard _omp_pfg; !_omp_pfg.done; _omp_pfg.finalize()) \
-    for (::par::macro::CtxInit _omp_ci(_omp_pfg.ctx); _omp_ci.once; _omp_ci.once = false) \
+    for (::par::macro::CtxInit _omp_ci(_omp_pfg.ctx, _omp_pfg.mem_ctx); _omp_ci.once; _omp_ci.once = false) \
     _OMP_PRAGMA(omp parallel for shared(_omp_pfg) firstprivate(_omp_ci) __VA_ARGS__)
 
 /**
@@ -446,7 +463,7 @@ namespace par { namespace macro {
  */
 #define OMP_PARALLEL_FOR_SIMD(...) \
     for (::par::macro::ParallelForSimdGuard _omp_pfsg; !_omp_pfsg.done; _omp_pfsg.finalize()) \
-    for (::par::macro::CtxInit _omp_ci(_omp_pfsg.ctx); _omp_ci.once; _omp_ci.once = false) \
+    for (::par::macro::CtxInit _omp_ci(_omp_pfsg.ctx, _omp_pfsg.mem_ctx); _omp_ci.once; _omp_ci.once = false) \
     _OMP_PRAGMA(omp parallel for simd shared(_omp_pfsg) firstprivate(_omp_ci) __VA_ARGS__)
 
 /**
@@ -460,7 +477,7 @@ namespace par { namespace macro {
  */
 #define OMP_PARALLEL_SECTIONS(...) \
     for (::par::macro::ParallelSectionsGuard _omp_psg; !_omp_psg.done; _omp_psg.finalize()) \
-    for (::par::macro::CtxInit _omp_ci(_omp_psg.ctx); _omp_ci.once; _omp_ci.once = false) \
+    for (::par::macro::CtxInit _omp_ci(_omp_psg.ctx, _omp_psg.mem_ctx); _omp_ci.once; _omp_ci.once = false) \
     _OMP_PRAGMA(omp parallel sections shared(_omp_psg) firstprivate(_omp_ci) __VA_ARGS__)
 
 
@@ -704,51 +721,55 @@ namespace par {
 
     class Lock {
         omp_lock_t lk_;
-    public:
-        Lock()  { omp_init_lock(&lk_); }
-        ~Lock() { omp_destroy_lock(&lk_); }
-        void lock()     { omp_set_lock(&lk_); }
-        void unlock()   { omp_unset_lock(&lk_); }
-        bool try_lock() { return omp_test_lock(&lk_) != 0; }
 
-        Lock(const Lock&) = delete;
-        Lock& operator=(const Lock&) = delete;
+        public:
+            Lock() { omp_init_lock(&lk_); }
+            ~Lock() { omp_destroy_lock(&lk_); }
+            void lock() { omp_set_lock(&lk_); }
+            void unlock() { omp_unset_lock(&lk_); }
+            bool try_lock() { return omp_test_lock(&lk_) != 0; }
+
+            Lock(const Lock&) = delete;
+            Lock& operator=(const Lock&) = delete;
     };
 
     class LockGuard {
         Lock& lk_;
-    public:
-        explicit LockGuard(Lock& lk) : lk_(lk) { lk_.lock(); }
-        ~LockGuard() { lk_.unlock(); }
 
-        LockGuard(const LockGuard&) = delete;
-        LockGuard& operator=(const LockGuard&) = delete;
+        public:
+            explicit LockGuard(Lock& lk) : lk_(lk) { lk_.lock(); }
+            ~LockGuard() { lk_.unlock(); }
+
+            LockGuard(const LockGuard&) = delete;
+            LockGuard& operator=(const LockGuard&) = delete;
     };
 
     // ---- Nested Lock API (RAII wrapper for omp_nest_lock_t) ----
 
     class NestLock {
         omp_nest_lock_t lk_;
-    public:
-        NestLock()  { omp_init_nest_lock(&lk_); }
-        ~NestLock() { omp_destroy_nest_lock(&lk_); }
-        void lock()     { omp_set_nest_lock(&lk_); }
-        void unlock()   { omp_unset_nest_lock(&lk_); }
-        /** @brief Returns nesting count (>0 if lock acquired, 0 if not). */
-        int try_lock()  { return omp_test_nest_lock(&lk_); }
 
-        NestLock(const NestLock&) = delete;
-        NestLock& operator=(const NestLock&) = delete;
+        public:
+            NestLock() { omp_init_nest_lock(&lk_); }
+            ~NestLock() { omp_destroy_nest_lock(&lk_); }
+            void lock() { omp_set_nest_lock(&lk_); }
+            void unlock() { omp_unset_nest_lock(&lk_); }
+            /** @brief Returns nesting count (>0 if lock acquired, 0 if not). */
+            int try_lock() { return omp_test_nest_lock(&lk_); }
+
+            NestLock(const NestLock&) = delete;
+            NestLock& operator=(const NestLock&) = delete;
     };
 
     class NestLockGuard {
         NestLock& lk_;
-    public:
-        explicit NestLockGuard(NestLock& lk) : lk_(lk) { lk_.lock(); }
-        ~NestLockGuard() { lk_.unlock(); }
 
-        NestLockGuard(const NestLockGuard&) = delete;
-        NestLockGuard& operator=(const NestLockGuard&) = delete;
+        public:
+            explicit NestLockGuard(NestLock& lk) : lk_(lk) { lk_.lock(); }
+            ~NestLockGuard() { lk_.unlock(); }
+
+            NestLockGuard(const NestLockGuard&) = delete;
+            NestLockGuard& operator=(const NestLockGuard&) = delete;
     };
 
 } // namespace par

@@ -41,5 +41,12 @@ nlohmann::json TestResultConverter::to_json(const TestResult& testResult) {
         {"taskyields", testResult.taskyields}
     };
 
+    json["memoryStats"] = {
+        {"peakMemoryBytes", testResult.peak_memory_bytes},
+        {"allocations", testResult.allocation_count},
+        {"deallocations", testResult.deallocation_count},
+        {"limitExceeded", testResult.memory_limit_exceeded}
+    };
+
     return json;
 }
