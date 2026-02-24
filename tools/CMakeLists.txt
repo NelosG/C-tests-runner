@@ -1,0 +1,58 @@
+# ============================================
+# CLI executable — local dev/debug
+# ============================================
+add_executable(run src/main.cpp)
+target_link_libraries(run PRIVATE test_engine)
+
+# Clean plugins directory before rebuilding 'run'
+add_custom_command(TARGET run PRE_LINK
+        COMMAND ${CMAKE_COMMAND} -E remove_directory "${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/plugins"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/plugins"
+        COMMENT "Cleaning plugins directory"
+)
+
+# ============================================
+# Integration test — full pipeline without HTTP
+# ============================================
+add_executable(test_server_pipeline src/test_server_pipeline.cpp)
+target_link_libraries(test_server_pipeline PRIVATE test_engine parallel_lib)
+
+# ============================================
+# RabbitMQ client mock — orchestrator stub for RabbitMQ adapter
+# ============================================
+add_executable(rabbit_client_mock src/rabbit_client_mock.cpp)
+target_include_directories(rabbit_client_mock PRIVATE
+        ${CMAKE_SOURCE_DIR}/adapters/rabbit
+        ${CMAKE_SOURCE_DIR}/adapters/include
+        ${CMAKE_SOURCE_DIR}/test_engine/src   # for time_utils.h
+)
+target_link_libraries(rabbit_client_mock PRIVATE amqpcpp uv_a nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(rabbit_client_mock PRIVATE ws2_32 iphlpapi userenv)
+endif()
+
+# ============================================
+# HTTP client mock — orchestrator stub for HTTP adapter
+# ============================================
+add_executable(http_client_mock src/http_client_mock.cpp)
+target_include_directories(http_client_mock PRIVATE
+        ${CMAKE_SOURCE_DIR}/test_engine/src   # for time_utils.h
+)
+target_link_libraries(http_client_mock PRIVATE httplib::httplib nlohmann_json::nlohmann_json)
+
+# ============================================
+# RPATH for Linux
+# ============================================
+if(UNIX)
+    set_target_properties(run test_server_pipeline PROPERTIES
+            BUILD_RPATH "${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}"
+            INSTALL_RPATH "$ORIGIN/../lib"
+    )
+endif()
+
+# ============================================
+# Install rules
+# ============================================
+install(TARGETS run
+        RUNTIME DESTINATION bin
+)
