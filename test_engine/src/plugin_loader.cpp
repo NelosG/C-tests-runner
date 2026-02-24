@@ -1,14 +1,8 @@
+#include <dll_utils.h>
 #include <filesystem>
 #include <iostream>
-#include <plugin_export.h>
 #include <plugin_loader.h>
 #include <test_registry.h>
-
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
 
 namespace fs = std::filesystem;
 
@@ -17,51 +11,24 @@ PluginLoader::~PluginLoader() {
 }
 
 PluginLoader::PluginLoader(PluginLoader&& other) noexcept
-    : pluginHandles_(std::move(other.pluginHandles_)) {
-    other.pluginHandles_.clear();
+    : plugin_handles_(std::move(other.plugin_handles_)) {
+    other.plugin_handles_.clear();
 }
 
 PluginLoader& PluginLoader::operator=(PluginLoader&& other) noexcept {
     if(this != &other) {
         unloadAll();
-        pluginHandles_ = std::move(other.pluginHandles_);
-        other.pluginHandles_.clear();
+        plugin_handles_ = std::move(other.plugin_handles_);
+        other.plugin_handles_.clear();
     }
     return *this;
-}
-
-void* PluginLoader::loadLibrary(const std::string& path) {
-    #ifdef _WIN32
-    return LoadLibraryA(path.c_str());
-    #else
-    return dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
-    #endif
-}
-
-void* PluginLoader::getSymbol(void* handle, const std::string& symbol) {
-    #ifdef _WIN32
-    return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), symbol.c_str()));
-    #else
-    return dlsym(handle, symbol.c_str());
-    #endif
-}
-
-void PluginLoader::unloadLibrary(const std::pair<std::string, void*>& handle) {
-    std::cout << "[PluginLoader] Unload plugin: " << handle.first << std::endl;
-    if(handle.second) {
-        #ifdef _WIN32
-        FreeLibrary(static_cast<HMODULE>(handle.second));
-        #else
-        dlclose(handle);
-        #endif
-    }
 }
 
 std::vector<std::string> PluginLoader::findPluginFiles(const std::string& directory) {
     std::vector<std::string> plugins;
 
     if(!fs::exists(directory)) {
-        std::cerr << "[PluginLoader] Directory does not exist: " << directory << std::endl;
+        std::cerr << "[PluginLoader] Directory does not exist: " << fs::path(directory).filename().string() << std::endl;
         return plugins;
     }
 
@@ -83,70 +50,55 @@ std::vector<std::string> PluginLoader::findPluginFiles(const std::string& direct
     return plugins;
 }
 
-bool PluginLoader::loadPlugin(const std::string& pluginPath) {
-    std::cout << "[PluginLoader] Loading plugin: " << pluginPath << std::endl;
+bool PluginLoader::loadPlugin(const std::string& plugin_path) {
+    std::string plugin_name = fs::path(plugin_path).filename().string();
+    std::cout << "[PluginLoader] Loading plugin: " << plugin_name << std::endl;
 
-    void* handle = loadLibrary(pluginPath);
+    void* handle = dll::load(plugin_path);
     if(!handle) {
-        #ifdef _WIN32
-        std::cerr << "[PluginLoader] Failed to load: " << pluginPath
-            << " Error: " << GetLastError() << std::endl;
-        #else
-        std::cerr << "[PluginLoader] Failed to load: " << pluginPath
-            << " Error: " << dlerror() << std::endl;
-        #endif
+        std::cerr << "[PluginLoader] Failed to load: " << plugin_name
+            << " Error: " << dll::lastError() << std::endl;
         return false;
     }
 
-    // Ищем функцию регистрации тестов
-    auto registerFunc = reinterpret_cast<RegisterPluginFunc>(
-        getSymbol(handle, "register_plugin_tests")
-    );
+    plugin_handles_.emplace_back(plugin_path, handle);
 
-    if(!registerFunc) {
-        std::cerr << "[PluginLoader] Function 'register_plugin_tests' not found in: "
-            << pluginPath << std::endl;
-        unloadLibrary({pluginPath, handle});
-        return false;
-    }
-
-    // Вызываем функцию регистрации - она добавит тесты в TestRegistry
-    registerFunc(TestRegistry::instance());
-
-    pluginHandles_.emplace_back(pluginPath, handle);
-
-    std::cout << "[PluginLoader] Successfully loaded: " << pluginPath << std::endl;
+    std::cout << "[PluginLoader] Successfully loaded: " << plugin_name << std::endl;
     return true;
 }
 
 std::vector<std::string> PluginLoader::getLoadedPlugins() const {
     std::vector<std::string> paths;
-    for(const auto& [path, handle] : pluginHandles_) {
+    for(const auto& [path, handle] : plugin_handles_) {
         paths.emplace_back(path);
     }
     return paths;
 }
 
 size_t PluginLoader::loadPluginsFromDirectory(const std::string& directory) {
-    std::cout << "[PluginLoader] Scanning directory: " << directory << std::endl;
+    std::cout << "[PluginLoader] Scanning directory: " << fs::path(directory).filename().string() << std::endl;
 
-    auto pluginFiles = findPluginFiles(directory);
+    auto plugin_files = findPluginFiles(directory);
     size_t loaded = 0;
 
-    for(const auto& pluginPath : pluginFiles) {
-        if(loadPlugin(pluginPath)) {
+    for(const auto& plugin_path : plugin_files) {
+        if(loadPlugin(plugin_path)) {
             ++loaded;
         }
     }
 
     std::cout << "[PluginLoader] Loaded " << loaded << " of "
-        << pluginFiles.size() << " plugins" << std::endl;
+        << plugin_files.size() << " plugins" << std::endl;
     return loaded;
 }
 
 void PluginLoader::unloadAll() {
-    for(const auto& handle : pluginHandles_) {
-        unloadLibrary(handle);
+    // Clear registry BEFORE closing handles to avoid dangling vtable pointers.
+    TestRegistry::instance().clear();
+
+    for(const auto& [path, handle] : plugin_handles_) {
+        std::cout << "[PluginLoader] Unload plugin: " << fs::path(path).filename().string() << std::endl;
+        dll::free(handle);
     }
-    pluginHandles_.clear();
+    plugin_handles_.clear();
 }

@@ -1,24 +1,28 @@
 #include <chrono>
-#include <test_registry.h>
 #include <test_scenario_extension.h>
 
 TestResult TestScenarioExtension::runTest(const Test& test) {
+    // Phase 1: Setup (NOT timed) — generate test data
+    test.setup();
+
+    // Phase 2: Execute (TIMED) — run student solution
     const auto start = std::chrono::high_resolution_clock::now();
-
-    auto [result, message] = test();
-
+    test.execute();
     const auto end = std::chrono::high_resolution_clock::now();
-    auto time_ms =
+
+    double time_ms =
         std::chrono::duration<double, std::milli>(end - start).count();
+
+    // Phase 3: Verify (NOT timed) — check results
+    auto [passed, message] = test.verify();
 
     return {
         test.name,
-        result,
+        passed,
         message,
         time_ms
     };
 }
-
 
 TestScenarioResult TestScenarioExtension::run() const {
     const auto tests = getTests();
