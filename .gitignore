@@ -4,6 +4,8 @@ target/
 !**/src/test/**/target/
 cmake-build-*
 output-*
+cache/
+result/
 .kotlin
 delivery/
 *.log

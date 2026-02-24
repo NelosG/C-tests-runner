@@ -1,0 +1,6 @@
+{
+    "defaultAdapters": [
+        "http",
+        "rabbit"
+    ]
+}
