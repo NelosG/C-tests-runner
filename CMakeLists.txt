@@ -3,7 +3,8 @@
 #
 # Structure:
 #   parallel_lib/  — student-facing OpenMP wrappers with monitoring hooks
-#   test_engine/   — core shared library (build, load, execute, queue)
+#   test_engine/   — lightweight plugin API (test, registry, result types)
+#   server_core/   — server infrastructure (build, queue, runner, converters)
 #   tests/         — example test plugins and student solutions
 #   adapters/      — transport plugins (HTTP, RabbitMQ) loaded at runtime
 #   tools/         — CLI runner, integration tests, mock orchestrators
@@ -48,7 +49,8 @@ FetchContent_MakeAvailable(nlohmann_json)
 # Subdirectories
 # ============================================
 add_subdirectory(parallel_lib)   # Student-facing OpenMP wrappers (shared lib)
-add_subdirectory(test_engine)    # Core test framework (shared lib)
+add_subdirectory(test_engine)    # Lightweight plugin API (shared lib, no ext deps)
+add_subdirectory(server_core)    # Server infrastructure (shared lib, links test_engine + deps)
 add_subdirectory(tests)          # Example test plugins (DLLs)
 add_subdirectory(adapters)       # Transport adapters: HTTP, RabbitMQ (DLLs)
 add_subdirectory(resource)       # Resource providers: git, local (DLLs)
@@ -58,7 +60,7 @@ add_subdirectory(tools)          # CLI tools and mock orchestrators
 # Server executable — loads adapter DLLs at runtime
 # ============================================
 add_executable(server server.cpp)
-target_link_libraries(server PRIVATE test_engine nlohmann_json::nlohmann_json)
+target_link_libraries(server PRIVATE server_core nlohmann_json::nlohmann_json)
 target_include_directories(server PRIVATE
         ${CMAKE_SOURCE_DIR}/adapters/include
         ${CMAKE_SOURCE_DIR}/resource/include
@@ -66,14 +68,14 @@ target_include_directories(server PRIVATE
 )
 
 add_executable(cli cli.cpp)
-target_link_libraries(cli PRIVATE test_engine nlohmann_json::nlohmann_json)
+target_link_libraries(cli PRIVATE server_core nlohmann_json::nlohmann_json)
 target_include_directories(cli PRIVATE
         ${CMAKE_SOURCE_DIR}/resource/include
         ${CMAKE_SOURCE_DIR}
 )
 
-# resource/include headers are part of the test_engine public API (resource_manager.h uses them)
-target_include_directories(test_engine PUBLIC ${CMAKE_SOURCE_DIR}/resource/include)
+# resource/include headers are part of the server_core public API (resource_manager.h uses them)
+target_include_directories(server_core PUBLIC ${CMAKE_SOURCE_DIR}/resource/include)
 
 # Create output directories for plugins
 file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/adapters)
@@ -92,13 +94,17 @@ endif()
 install(TARGETS server
         RUNTIME DESTINATION bin
 )
-install(TARGETS test_engine parallel_lib
+install(TARGETS test_engine server_core parallel_lib
         LIBRARY DESTINATION lib
         RUNTIME DESTINATION bin
         ARCHIVE DESTINATION lib
 )
 install(DIRECTORY test_engine/src/
-        DESTINATION include
+        DESTINATION include/test_engine
+        FILES_MATCHING PATTERN "*.h"
+)
+install(DIRECTORY server_core/src/
+        DESTINATION include/server_core
         FILES_MATCHING PATTERN "*.h"
 )
 install(DIRECTORY parallel_lib/include/par

@@ -22,7 +22,7 @@ target_include_directories(http_adapter PRIVATE
 )
 
 target_link_libraries(http_adapter PRIVATE
-        test_engine
+        server_core
         httplib::httplib
         nlohmann_json::nlohmann_json
 )

@@ -30,7 +30,7 @@ target_include_directories(rabbit_adapter PRIVATE
 )
 
 target_link_libraries(rabbit_adapter PRIVATE
-        test_engine
+        server_core
         amqpcpp
         uv_a
         nlohmann_json::nlohmann_json
