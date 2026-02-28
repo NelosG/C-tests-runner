@@ -5,6 +5,7 @@
  * @brief Helper to determine thread counts based on test mode.
  */
 
+#include <api_types.h>
 #include <string>
 #include <vector>
 
@@ -18,7 +19,7 @@ namespace ThreadCounts {
  * @return Vector of thread counts for TestEngine::execute().
  */
     inline std::vector<int> get(const std::string& mode, int max_threads) {
-        if(mode == "performance") {
+        if(mode == to_string(test_mode::performance)) {
             return {1, max_threads};
         }
         // "correctness" or "all"

@@ -28,7 +28,8 @@ std::vector<std::string> PluginLoader::findPluginFiles(const std::string& direct
     std::vector<std::string> plugins;
 
     if(!fs::exists(directory)) {
-        std::cerr << "[PluginLoader] Directory does not exist: " << fs::path(directory).filename().string() << std::endl;
+        std::cerr << "[PluginLoader] Directory does not exist: " << fs::path(directory).filename().string() <<
+            std::endl;
         return plugins;
     }
 

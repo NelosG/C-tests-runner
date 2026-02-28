@@ -17,10 +17,11 @@ struct CommandResult {
 
 inline CommandResult runCommand(const std::string& cmd) {
     CommandResult result;
-    std::array<char, 4096> buf{};
+    std::array < char, 4096 > buf{};
 
     struct PipeGuard {
         FILE* fp = nullptr;
+
         ~PipeGuard() {
             if(fp) {
                 #ifdef _WIN32
@@ -32,11 +33,13 @@ inline CommandResult runCommand(const std::string& cmd) {
         }
     } guard;
 
-#ifdef _WIN32
-    guard.fp = _popen(cmd.c_str(), "r");
-#else
+    #ifdef _WIN32
+    // cmd /c requires outer quotes when command contains inner quotes
+    std::string wrapped = "\"" + cmd + "\"";
+    guard.fp = _popen(wrapped.c_str(), "r");
+    #else
     guard.fp = popen(cmd.c_str(), "r");
-#endif
+    #endif
 
     if(!guard.fp) {
         result.output = "Failed to run command: " + cmd;
@@ -50,12 +53,12 @@ inline CommandResult runCommand(const std::string& cmd) {
     // Close pipe and capture exit code
     FILE* fp = guard.fp;
     guard.fp = nullptr;  // prevent double-close in destructor
-#ifdef _WIN32
+    #ifdef _WIN32
     result.exit_code = _pclose(fp);
-#else
+    #else
     int status = pclose(fp);
     result.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-#endif
+    #endif
 
     return result;
 }

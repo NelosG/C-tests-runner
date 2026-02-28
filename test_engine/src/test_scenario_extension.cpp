@@ -1,4 +1,5 @@
 #include <chrono>
+#include <new>
 #include <test_scenario_extension.h>
 
 TestResult TestScenarioExtension::runTest(const Test& test) {
@@ -7,7 +8,14 @@ TestResult TestScenarioExtension::runTest(const Test& test) {
 
     // Phase 2: Execute (TIMED) — run student solution
     const auto start = std::chrono::high_resolution_clock::now();
-    test.execute();
+    try {
+        test.execute();
+    } catch (const std::bad_alloc&) {
+        // Memory limit exceeded — mark test as failed, keep timing
+        const auto end = std::chrono::high_resolution_clock::now();
+        double time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+        return {test.name, false, "Memory limit exceeded", time_ms};
+    }
     const auto end = std::chrono::high_resolution_clock::now();
 
     double time_ms =

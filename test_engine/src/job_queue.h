@@ -9,6 +9,7 @@
  * (no correctness jobs running simultaneously).
  */
 
+#include <api_types.h>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -22,18 +23,9 @@
 
 class JobQueue {
     public:
-        enum class JobStatus {
-            QUEUED,
-            BUILDING,
-            RUNNING,
-            COMPLETED,
-            FAILED,
-            CANCELLED
-        };
-
         struct JobInfo {
             std::string job_id;
-            JobStatus status = JobStatus::QUEUED;
+            job_status status = job_status::queued;
             int queue_position = 0;
             nlohmann::json request;
             nlohmann::json result;
@@ -46,11 +38,11 @@ class JobQueue {
         /// Function that executes a single job and returns the result JSON.
 		/// Called from a worker thread. May throw on failure.
         using JobExecutor = std::function<
-            nlohmann::json(const nlohmann::json & request, std::function < void(JobStatus) > status_updater)
+            nlohmann::json(const nlohmann::json & request, std::function < void(job_status) > status_updater)
         >;
 
         /// Optional callback invoked after a job completes (success or failure).
-        using CompletionCallback = std::function<void(const nlohmann::json& result)>;
+        using CompletionCallback = std::function<void(const nlohmann::json & result)>;
 
         /**
      * @brief Construct the queue.
@@ -77,8 +69,6 @@ class JobQueue {
 
         /// Get an overview of all queues, active workers, and tracked jobs.
         nlohmann::json getStatus() const;
-
-        static std::string statusToString(JobStatus s);
 
         /// Dynamically resize the correctness worker thread pool.
         /// If new_size > current: spawn additional workers.

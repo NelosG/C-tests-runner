@@ -92,6 +92,14 @@ nlohmann::json TestScenarioResultConverter::to_grouped_json(
                     {"taskyields", tr.taskyields}
                 };
 
+                // Memory stats sub-object: allocation tracking
+                run["memoryStats"] = {
+                    {"peakMemoryBytes", tr.peak_memory_bytes},
+                    {"allocations", tr.allocation_count},
+                    {"deallocations", tr.deallocation_count},
+                    {"limitExceeded", tr.memory_limit_exceeded}
+                };
+
                 runs.push_back(run);
             }
             test_entry["runs"] = runs;

@@ -10,93 +10,93 @@
 
 namespace fs = std::filesystem;
 
+
 namespace {
 
-#ifdef _WIN32
-constexpr const char* SHARED_LIB_EXT = ".dll";
-#else
-constexpr const char* SHARED_LIB_EXT = ".so";
-#endif
+    #ifdef _WIN32
+    constexpr const char* SHARED_LIB_EXT = ".dll";
+    #else
+    constexpr const char* SHARED_LIB_EXT = ".so";
+    #endif
 
-std::atomic<int> temp_counter{0};
+    std::atomic<int> temp_counter{0};
 
-/// Reliable recursive directory copy (fs::copy with recursive is unreliable on MinGW).
-void copyDirectoryRecursive(const fs::path& src, const fs::path& dst, std::error_code& ec) {
-    fs::create_directories(dst, ec);
-    if(ec) return;
-
-    for(const auto& entry : fs::directory_iterator(src, ec)) {
+    /// Reliable recursive directory copy (fs::copy with recursive is unreliable on MinGW).
+    void copyDirectoryRecursive(const fs::path& src, const fs::path& dst, std::error_code& ec) {
+        fs::create_directories(dst, ec);
         if(ec) return;
-        const auto& target = dst / entry.path().filename();
-        if(entry.is_directory()) {
-            copyDirectoryRecursive(entry.path(), target, ec);
+
+        for(const auto& entry : fs::directory_iterator(src, ec)) {
             if(ec) return;
-        } else {
-            fs::copy_file(entry.path(), target, fs::copy_options::overwrite_existing, ec);
-            if(ec) return;
+            // Skip symlinks to prevent symlink attacks from cloned repos
+            if(entry.is_symlink()) continue;
+            const auto& target = dst / entry.path().filename();
+            if(entry.is_directory()) {
+                copyDirectoryRecursive(entry.path(), target, ec);
+                if(ec) return;
+            } else {
+                fs::copy_file(entry.path(), target, fs::copy_options::overwrite_existing, ec);
+                if(ec) return;
+            }
         }
     }
-}
 
-/// Run cmake configure + build, return combined output. Sets error on failure.
-std::string cmakeConfigureAndBuild(
-    const std::string& cmake_executable,
-    const std::string& generator,
-    const fs::path& source_dir,
-    const fs::path& build_dir,
-    std::string& error_message,
-    const std::string& extra_defines = ""
-) {
-    std::string output;
+    /// Run cmake configure + build, return combined output. Sets error on failure.
+    std::string cmakeConfigureAndBuild(
+        const std::string& cmake_executable,
+        const std::string& generator,
+        const fs::path& source_dir,
+        const fs::path& build_dir,
+        std::string& error_message,
+        const std::string& extra_defines = ""
+    ) {
+        std::string output;
 
-    std::string configure_cmd = "\"" + cmake_executable + "\" "
-        + "-G \"" + generator + "\" "
-        + "-DCMAKE_BUILD_TYPE=Release "
-        + extra_defines
-        + "\"" + source_dir.string() + "\" "
-        + "-B \"" + build_dir.string() + "\" "
-        + " 2>&1";
+        std::string configure_cmd = "\"" + cmake_executable + "\" "
+            + "-G \"" + generator + "\" "
+            + "-DCMAKE_BUILD_TYPE=Release "
+            + extra_defines
+            + "\"" + source_dir.string() + "\" "
+            + "-B \"" + build_dir.string() + "\" "
+            + " 2>&1";
 
-    #ifdef _WIN32
-    configure_cmd = "\"" + configure_cmd + "\"";
-    #endif
+        auto configure_result = runCommand(configure_cmd);
+        output += "=== Configure ===\n" + configure_result.output + "\n";
 
-    auto configure_result = runCommand(configure_cmd);
-    output += "=== Configure ===\n" + configure_result.output + "\n";
+        if(configure_result.failed()) {
+            error_message = "CMake configure failed";
+            return output;
+        }
 
-    if(configure_result.failed()) {
-        error_message = "CMake configure failed";
+        std::string build_cmd = "\"" + cmake_executable + "\" "
+            + "--build \"" + build_dir.string() + "\" "
+            + "--config Release "
+            + " 2>&1";
+
+        auto build_result = runCommand(build_cmd);
+        output += "=== Build ===\n" + build_result.output + "\n";
+
+        if(build_result.failed()) {
+            error_message = "Build failed";
+            return output;
+        }
+
         return output;
     }
-
-    std::string build_cmd = "\"" + cmake_executable + "\" "
-        + "--build \"" + build_dir.string() + "\" "
-        + "--config Release "
-        + " 2>&1";
-
-    #ifdef _WIN32
-    build_cmd = "\"" + build_cmd + "\"";
-    #endif
-
-    auto build_result = runCommand(build_cmd);
-    output += "=== Build ===\n" + build_result.output + "\n";
-
-    if(build_result.failed()) {
-        error_message = "Build failed";
-        return output;
-    }
-
-    return output;
-}
 
 } // anonymous namespace
 
 BuildService::BuildService(BuildConfig config)
     : config_(config),
-      cmake_gen_({config.engine_lib_path,
-                  config.engine_include_path,
-                  config.parallel_lib_path,
-                  config.parallel_include_path}) {}
+      cmake_gen_(
+          {
+              config.engine_lib_path,
+              config.engine_include_path,
+              config.parallel_lib_path,
+              config.parallel_include_path,
+              config.memory_inject_path
+          }
+      ) {}
 
 void BuildService::cleanup(const std::string& build_dir) {
     if(build_dir.empty()) return;
@@ -125,7 +125,9 @@ BuildService::TestBuildResult BuildService::buildTests(
 
     // Create temp directory for the test build
     auto now = std::chrono::system_clock::now().time_since_epoch().count();
-    fs::path tmp_tests = fs::temp_directory_path() / ("tests-" + std::to_string(now) + "-" + std::to_string(temp_counter.fetch_add(1)));
+    fs::path tmp_tests = fs::temp_directory_path() / ("tests-" + std::to_string(now) + "-" + std::to_string(
+        temp_counter.fetch_add(1)
+    ));
     {
         std::error_code ec;
         fs::remove_all(tmp_tests, ec);
@@ -137,7 +139,10 @@ BuildService::TestBuildResult BuildService::buildTests(
 
     {
         std::string cmake_content = cmake_gen_.testWrapperCMakeLists(
-            test_dir, student_lib_dir, student_include_dir);
+            test_dir,
+            student_lib_dir,
+            student_include_dir
+        );
         std::ofstream f(tmp_tests / "CMakeLists.txt");
         f << cmake_content;
     }
@@ -145,8 +150,11 @@ BuildService::TestBuildResult BuildService::buildTests(
     // Build tests — internet ALLOWED (no network blocking)
     fs::path test_build_dir = tmp_tests / "build";
     result.build_output += cmakeConfigureAndBuild(
-        config_.cmake_executable, config_.generator,
-        tmp_tests, test_build_dir, result.error_message
+        config_.cmake_executable,
+        config_.generator,
+        tmp_tests,
+        test_build_dir,
+        result.error_message
     );
 
     // Fallback: if custom CMakeLists failed, retry with auto-generated
@@ -164,7 +172,11 @@ BuildService::TestBuildResult BuildService::buildTests(
 
         {
             std::string cmake_content = cmake_gen_.testWrapperCMakeLists(
-                test_dir, student_lib_dir, student_include_dir, true);
+                test_dir,
+                student_lib_dir,
+                student_include_dir,
+                true
+            );
             std::ofstream f(tmp_tests / "CMakeLists.txt");
             f << cmake_content;
         }
@@ -174,8 +186,11 @@ BuildService::TestBuildResult BuildService::buildTests(
             + "\n\n=== Retry with auto-generated test CMakeLists ===\n";
 
         result.build_output += cmakeConfigureAndBuild(
-            config_.cmake_executable, config_.generator,
-            tmp_tests, test_build_dir, result.error_message
+            config_.cmake_executable,
+            config_.generator,
+            tmp_tests,
+            test_build_dir,
+            result.error_message
         );
 
         if(result.error_message.empty()) {
@@ -265,8 +280,11 @@ BuildService::SolutionBuildResult BuildService::buildSolution(
 
     if(fs::exists(solution_workspace / "CMakeLists.txt")) {
         result.build_output = cmakeConfigureAndBuild(
-            config_.cmake_executable, config_.generator,
-            tmp, build_dir, result.error_message,
+            config_.cmake_executable,
+            config_.generator,
+            tmp,
+            build_dir,
+            result.error_message,
             "-DFETCHCONTENT_FULLY_DISCONNECTED=ON "
             "-DFETCHCONTENT_UPDATES_DISCONNECTED=ON "
         );
@@ -298,8 +316,11 @@ BuildService::SolutionBuildResult BuildService::buildSolution(
         fs::path custom_fallback = fs::path(test_dir) / "solution-defaults" / "CMakeLists.txt";
         if(fs::exists(custom_fallback)) {
             std::cout << "[BuildService] Using fallback from: " << custom_fallback << "\n";
-            fs::copy_file(custom_fallback, solution_workspace / "CMakeLists.txt",
-                fs::copy_options::overwrite_existing);
+            fs::copy_file(
+                custom_fallback,
+                solution_workspace / "CMakeLists.txt",
+                fs::copy_options::overwrite_existing
+            );
             reason += "; replaced with test-provided defaults";
         } else {
             // Priority 2: auto-generated default
@@ -319,8 +340,11 @@ BuildService::SolutionBuildResult BuildService::buildSolution(
         write_wrapper();
 
         result.build_output = cmakeConfigureAndBuild(
-            config_.cmake_executable, config_.generator,
-            tmp, build_dir, result.error_message,
+            config_.cmake_executable,
+            config_.generator,
+            tmp,
+            build_dir,
+            result.error_message,
             "-DFETCHCONTENT_FULLY_DISCONNECTED=ON "
             "-DFETCHCONTENT_UPDATES_DISCONNECTED=ON "
         );
@@ -339,7 +363,7 @@ BuildService::SolutionBuildResult BuildService::buildSolution(
         if(!entry.is_regular_file()) continue;
         std::string filename = entry.path().filename().string();
         if(filename.find("student_solution") != std::string::npos &&
-           entry.path().extension().string() == SHARED_LIB_EXT) {
+            entry.path().extension().string() == SHARED_LIB_EXT) {
             result.solution_lib_path = entry.path().string();
             break;
         }

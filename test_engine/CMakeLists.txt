@@ -6,42 +6,42 @@ find_package(OpenMP REQUIRED)
 
 # Explicit source list (no GLOB_RECURSE — new files must be added here)
 set(ENGINE_SOURCES
-    src/build_service.cpp
-    src/cmake_generator.cpp
-    src/job_queue.cpp
-    src/numa_utils.cpp
-    src/plugin_loader.cpp
-    src/test_engine.cpp
-    src/test_registry.cpp
-    src/test_result_converter.cpp
-    src/test_runner_service.cpp
-    src/test_scenario_extension.cpp
-    src/test_scenario_result_converter.cpp
+        src/build_service.cpp
+        src/cmake_generator.cpp
+        src/job_queue.cpp
+        src/numa_utils.cpp
+        src/plugin_loader.cpp
+        src/test_engine.cpp
+        src/test_registry.cpp
+        src/test_result_converter.cpp
+        src/test_runner_service.cpp
+        src/test_scenario_extension.cpp
+        src/test_scenario_result_converter.cpp
 )
 
 set(ENGINE_HEADERS
-    src/build_service.h
-    src/cmake_generator.h
-    src/config_utils.h
-    src/dll_utils.h
-    src/job_queue.h
-    src/numa_utils.h
-    src/plugin_export.h
-    src/plugin_loader.h
-    src/process_utils.h
-    src/project_utils.h
-    src/register_test.h
-    src/test.h
-    src/test_engine.h
-    src/test_registry.h
-    src/test_result.h
-    src/test_result_converter.h
-    src/test_runner_service.h
-    src/test_scenario_extension.h
-    src/test_scenario_result.h
-    src/test_scenario_result_converter.h
-    src/thread_counts.h
-    src/time_utils.h
+        src/build_service.h
+        src/cmake_generator.h
+        src/config_utils.h
+        src/dll_utils.h
+        src/job_queue.h
+        src/numa_utils.h
+        src/plugin_export.h
+        src/plugin_loader.h
+        src/process_utils.h
+        src/project_utils.h
+        src/register_test.h
+        src/test.h
+        src/test_engine.h
+        src/test_registry.h
+        src/test_result.h
+        src/test_result_converter.h
+        src/test_runner_service.h
+        src/test_scenario_extension.h
+        src/test_scenario_result.h
+        src/test_scenario_result_converter.h
+        src/thread_counts.h
+        src/time_utils.h
 )
 
 # Build test_engine as SHARED library

@@ -2,6 +2,7 @@
 #include <test_engine.h>
 #include <test_scenario_extension.h>
 #include <par/monitor.h>
+#include <par/memory_guard.h>
 
 std::vector<TestScenarioResult> TestEngine::execute(
     const std::vector<int>& thread_counts,
@@ -28,6 +29,8 @@ std::vector<TestScenarioResult> TestEngine::execute(
 
             for(const auto& test : tests) {
                 ctx.resetStats();
+                auto* mem_ctx = par::memory::detail::currentContext();
+                if(mem_ctx) mem_ctx->resetStats();
 
                 auto tr = TestScenarioExtension::runTest(test);
 
@@ -56,12 +59,17 @@ std::vector<TestScenarioResult> TestEngine::execute(
                 // - No tasks → for-based pattern, no DAG to track
                 // - No single region → spanInitRoot never called, DAG has no root
                 // - span_ns == 0 → defensive fallback (e.g. NORMAL mode)
-                {
-                    int tasks = st.tasks_created.load(std::memory_order_relaxed);
-                    int singles = st.single_regions.load(std::memory_order_relaxed);
-                    if(tasks == 0 || singles == 0 || tr.span_ns == 0) {
-                        tr.span_ns = static_cast<long long>(tr.time_ms * 1e6);
-                    }
+                if(tr.tasks_created == 0 || tr.single_regions == 0 || tr.span_ns == 0) {
+                    tr.span_ns = static_cast<long long>(tr.time_ms * 1e6);
+                }
+
+                // Copy memory stats from active context
+                if(mem_ctx) {
+                    const auto& ms = mem_ctx->stats;
+                    tr.peak_memory_bytes = ms.peak_bytes.load(std::memory_order_relaxed);
+                    tr.allocation_count = ms.allocations.load(std::memory_order_relaxed);
+                    tr.deallocation_count = ms.deallocations.load(std::memory_order_relaxed);
+                    tr.memory_limit_exceeded = ms.limit_exceeded.load(std::memory_order_relaxed);
                 }
 
                 test_results.push_back(std::move(tr));

@@ -42,10 +42,12 @@ namespace parallel {
                 do_qsort(array, low, q - 1, gen);
                 do_qsort(array, q + 1, high, gen);
             } else {
-                OMP_TASK(default(none) shared(array, gen) firstprivate(low, q)) {
+                OMP_TASK(default(none) shared(array, gen) firstprivate(low, q))
+                {
                     do_qsort(array, low, q - 1, gen);
                 }
-                OMP_TASK(default(none) shared(array, gen) firstprivate(q, high)) {
+                OMP_TASK(default(none) shared(array, gen) firstprivate(q, high))
+                {
                     do_qsort(array, q + 1, high, gen);
                 }
             }
@@ -53,8 +55,10 @@ namespace parallel {
     }
 
     void qsort_tasks(std::vector<int>& array, int low, int high, std::mt19937& gen) {
-        OMP_PARALLEL(default(none) shared(array, low, high, gen)) {
-            OMP_SINGLE() {
+        OMP_PARALLEL(default(none) shared(array, low, high, gen))
+        {
+            OMP_SINGLE()
+            {
                 do_qsort(array, low, high, gen);
             }
             OMP_TASKWAIT;

@@ -41,6 +41,12 @@ struct TestResult {
     long long work_ns = 0;
     long long span_ns = 0;
 
+    // Per-test memory stats (from par::memory, reset between tests)
+    long long peak_memory_bytes = 0;
+    long long allocation_count = 0;
+    long long deallocation_count = 0;
+    bool memory_limit_exceeded = false;
+
     TestResult(
         std::string name,
         const bool passed,
