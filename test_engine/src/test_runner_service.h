@@ -6,6 +6,10 @@
  *
  * Owns a shared JobQueue — all adapters submit through this service.
  * Workflow: solution built first, then test plugins compiled against the real student DLL.
+ *
+ * Source resolution is delegated to ResourceManager. Supported source types:
+ *   - "git":   { url, branch?, token? } — clones/fetches with persistent cache
+ *   - "local": { path }               — resolves local path with base-dir support
  */
 
 #include <build_service.h>
@@ -14,17 +18,23 @@
 #include <job_queue.h>
 #include <memory>
 #include <plugin_loader.h>
+#include <resource_manager.h>
 #include <string>
 #include <nlohmann/json.hpp>
 
-namespace par { struct MonitorContext; }
+
+namespace par {
+    struct MonitorContext;
+}
+
+
 class TestRegistry;
 
 class TestRunnerService {
     public:
         using CompletionCallback = JobQueue::CompletionCallback;
 
-        explicit TestRunnerService(BuildService::BuildConfig config);
+        TestRunnerService(BuildService::BuildConfig config, ResourceManager& resource_manager);
 
         /// Submit a job to the shared queue. Returns the assigned job_id.
         std::string submit(nlohmann::json request, CompletionCallback on_complete = {});
@@ -44,15 +54,20 @@ class TestRunnerService {
         /// Set how long completed/failed/cancelled jobs are retained before cleanup.
         void setJobRetentionSeconds(int sec);
 
+        /// Default memory limit for new jobs (0 = unlimited).
+        long long default_memory_limit_mb() const { return default_memory_limit_mb_; }
+        void set_default_memory_limit_mb(long long mb) { default_memory_limit_mb_ = mb; }
+
         /**
          * @brief Execute a test job (cached workflow).
          *
-         * Request must contain test_id and test_dir (or test_git_url).
+         * Request must contain testId and source descriptors:
+         *   testSourceType + testSource, solutionSourceType + solutionSource
          * Supports mode: "correctness", "performance", "all".
          */
         nlohmann::json execute(
             const nlohmann::json& request,
-            std::function<void(JobQueue::JobStatus)> status_updater
+            std::function<void(job_status)> status_updater
         );
 
     private:
@@ -64,13 +79,13 @@ class TestRunnerService {
             int plugins_total = 0;
         };
 
-        /// Resolve paths for test and solution directories, clone from git if needed.
+        /// Resolve source paths via ResourceManager.
         struct ResolvedPaths {
             std::string test_dir;
             std::string solution_dir;
-            std::filesystem::path temp_clone_dir;
         };
-        ResolvedPaths resolvePaths(const nlohmann::json& request, const std::string& job_id);
+
+        ResolvedPaths resolvePaths(const nlohmann::json& request);
 
         /// Load student solution + test plugin DLLs in correct order.
         loaded_plugins loadPlugins(
@@ -83,7 +98,8 @@ class TestRunnerService {
             nlohmann::json& result,
             const std::string& job_id,
             const std::string& mode,
-            int threads, int numa_node,
+            int threads,
+            int numa_node,
             TestRegistry& registry,
             par::MonitorContext& ctx,
             const std::string& plugin_load_error
@@ -96,8 +112,10 @@ class TestRunnerService {
             const std::string& plugin_load_error
         );
 
+        ResourceManager& resource_manager_;
         std::string exe_dir_;
         int correctness_workers_;
+        long long default_memory_limit_mb_;
         BuildService build_service_;
         std::unique_ptr<JobQueue> queue_;
 };

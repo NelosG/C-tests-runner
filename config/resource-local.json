@@ -1,0 +1,6 @@
+{
+    "baseDirs": {
+        "solutions": "../examples",
+        "tests": "../examples"
+    }
+}
