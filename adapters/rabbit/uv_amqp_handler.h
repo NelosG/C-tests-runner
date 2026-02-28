@@ -259,12 +259,14 @@ class UvAmqpHandler : public AMQP::ConnectionHandler {
                 // Append new TCP data to the read buffer (may contain partial AMQP frames)
                 self->read_buffer_.insert(
                     self->read_buffer_.end(),
-                    buf->base, buf->base + nread
+                    buf->base,
+                    buf->base + nread
                 );
 
                 // Parse as many complete frames as possible
                 size_t parsed = self->connection_->parse(
-                    self->read_buffer_.data(), self->read_buffer_.size()
+                    self->read_buffer_.data(),
+                    self->read_buffer_.size()
                 );
 
                 if(parsed > 0) {

@@ -20,6 +20,7 @@
  */
 
 #include <adapter_api.h>
+#include <adapter_context.h>
 #include <atomic>
 #include <httplib.h>
 #include <memory>
@@ -30,19 +31,23 @@
 class HttpAdapter : public TestExecutionAdapter {
     public:
         struct Config {
+            std::string host;
             int port = 8080;
             std::string register_url;
             int registration_timeout_sec = 10;
             int listen_timeout_sec = 60;
             std::string node_id;
+            std::string adapter_name;
+            std::string api_key;
         };
 
-        HttpAdapter(TestRunnerService& runner, const ManagementAPI* management, const nlohmann::json& config);
+        HttpAdapter(TestRunnerService& runner, const ManagementAPI* management, const AdapterContext& ctx);
         ~HttpAdapter() override;
 
         std::string name() const override { return "HTTP"; }
         void start() override;
         void stop() override;
+        void notifyOnline() override;
 
     private:
         bool doRegister();
@@ -55,7 +60,6 @@ class HttpAdapter : public TestExecutionAdapter {
         Config config_;
 
         std::string auth_token_;
-        std::string orchestrator_token_;  ///< Token received from orchestrator for callback auth.
 
         httplib::Server svr_;
         std::shared_ptr<std::atomic<bool>> alive_;

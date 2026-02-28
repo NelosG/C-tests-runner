@@ -9,17 +9,17 @@
  *
  * The macro generates extern "C" factory functions expected by AdapterManager:
  *   adapter_name()    — returns the canonical name string
- *   create_adapter()  — parses config JSON and constructs the adapter
+ *   create_adapter()  — constructs the adapter from an AdapterContext
  *   destroy_adapter() — deletes the adapter
  *
  * The adapter class must have a constructor with signature:
- *   ClassName(TestRunnerService&, const ManagementAPI*, const nlohmann::json& config)
+ *   ClassName(TestRunnerService&, const ManagementAPI*, const AdapterContext& ctx)
  */
 
 #include <adapter_api.h>
+#include <adapter_context.h>
 #include <iostream>
 #include <test_runner_service.h>
-#include <nlohmann/json.hpp>
 
 #define REGISTER_ADAPTER(ClassName, AdapterName)                              \
 extern "C" {                                                                  \
@@ -30,17 +30,10 @@ ADAPTER_API const char* adapter_name() {                                      \
                                                                               \
 ADAPTER_API TransportAdapter* create_adapter(TestRunnerService* runner,       \
                                               const ManagementAPI* mgmt,      \
-                                              const char* config_json) {      \
-    if (!runner) return nullptr;                                              \
-    nlohmann::json config;                                                    \
-    try { config = nlohmann::json::parse(config_json); }                      \
-    catch (const std::exception& e) {                                         \
-        std::cerr << "[" AdapterName "] config parse error: "                 \
-                  << e.what() << "\n";                                        \
-        return nullptr;                                                       \
-    }                                                                         \
+                                              const AdapterContext* ctx) {    \
+    if (!runner || !ctx) return nullptr;                                      \
     try {                                                                     \
-        return new ClassName(*runner, mgmt, config);                          \
+        return new ClassName(*runner, mgmt, *ctx);                            \
     } catch (const std::exception& e) {                                       \
         std::cerr << "[" AdapterName "] create_adapter failed: "              \
                   << e.what() << "\n";                                        \

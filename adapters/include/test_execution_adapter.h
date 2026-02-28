@@ -29,11 +29,13 @@ class TestExecutionAdapter : public TransportAdapter {
             return ss.str();
         }
 
-        /// Generate a bearer auth token: "tok-<16 hex digits>".
+        /// Generate a bearer auth token: "tok-<32 hex digits>" (128-bit entropy).
         static std::string generateAuthToken() {
             std::uniform_int_distribution<uint32_t> dist;
             std::ostringstream ss;
-            ss << "tok-" << std::hex << dist(rng()) << dist(rng());
+            ss << "tok-" << std::hex
+                << dist(rng()) << dist(rng())
+                << dist(rng()) << dist(rng());
             return ss.str();
         }
 

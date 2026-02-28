@@ -25,7 +25,7 @@ class TestRunnerService;
 #endif
 
 /**
- * @brief C callbacks for adapter management (load/unload/list).
+ * @brief C callbacks for adapter and resource provider management.
  *
  * Passed to create_adapter() so adapters (like HTTP) can expose
  * management endpoints without crossing C++ ABI boundaries.
@@ -33,6 +33,8 @@ class TestRunnerService;
  */
 struct ManagementAPI {
     void* context;  ///< Opaque pointer to AdapterManager.
+
+    // ---- Adapter management ----
 
     /// Load and start an adapter by name.
     bool (*load_adapter)(void* ctx, const char* name, const nlohmann::json& config);
@@ -43,8 +45,28 @@ struct ManagementAPI {
     /// Get JSON array of available/running adapters. Caller must free with free_string().
     const char* (*list_adapters)(void* ctx);
 
-    /// Free a string returned by list_adapters(). Must be called from the same side.
+    /// Free a string returned by list_* functions. Must be called from the same side.
     void (*free_string)(void* ctx, const char* str);
+
+    // ---- Resource provider management ----
+
+    /// Load and start a resource provider by name. On failure, error is logged server-side.
+    bool (*load_resource_provider)(void* ctx, const char* name, const nlohmann::json& config);
+
+    /// Stop and unload a resource provider.
+    bool (*unload_resource_provider)(void* ctx, const char* name);
+
+    /// Get JSON array of all resource providers (available + running). Caller must free.
+    const char* (*list_resource_providers)(void* ctx);
+
+    /// Get JSON array of available (not yet loaded) resource providers. Caller must free.
+    const char* (*list_available_resource_providers)(void* ctx);
+
+    // ---- Adapter config update ----
+
+    /// Merge extra fields into a loaded adapter's stored config.
+    /// Adapters use this to register runtime-generated values (e.g. authToken).
+    void (*update_adapter_config)(void* ctx, const char* name, const nlohmann::json& patch);
 };
 
 // Factory functions (adapter_name, create_adapter, destroy_adapter) are

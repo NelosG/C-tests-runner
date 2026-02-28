@@ -7,7 +7,7 @@
  * Architecture:
  *   Single event loop thread handles ALL AMQP I/O:
  *     - Multiple channels on one connection
- *     - Correctness + performance consumers
+ *     - Task consumer (single queue, mode in message body)
  *     - Control listener (exclusive queue on node.fanout)
  *     - Result publishing
  *   Task execution delegated to JobQueue (same as HttpAdapter).
@@ -21,21 +21,25 @@
  *   listAvailableAdapters   — only adapters that can be loaded
  *   loadAdapter             — load and start an adapter by name
  *   unloadAdapter           — stop and unload a running adapter
- *   setMaxCorrectnessWorkers — dynamically resize correctness thread pool
+ *   updateConfig            — update engine config (config: {maxCorrectnessWorkers?, jobRetentionSeconds?})
  *
  * Topology:
  *   Exchange: test.direct (direct)
- *     Queue: test.tasks.correctness  <- routing key "correctness"
- *     Queue: test.tasks.performance  <- routing key "performance"
- *     Queue: test.results            <- routing key "result"
+ *     Queue: test.tasks              <- routing keys "correctness", "performance", "all"
+ *     Queue: test.results            <- routing key "results"
  *   Exchange: node.fanout (fanout)
  *     Queue: node.events
+ *   Exchange: node.control.direct (direct)
+ *     Bound to exclusive control queue with routing key = nodeId
  */
 
 #include <adapter_api.h>
+#include <adapter_context.h>
 #include <amqpcpp.h>
 #include <atomic>
+#include <control_type.h>
 #include <functional>
+#include <node_event_type.h>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -61,12 +65,13 @@ class RabbitAdapter : public TestExecutionAdapter {
             int connection_timeout_sec = 10;
         };
 
-        RabbitAdapter(TestRunnerService& runner, const ManagementAPI* management, const nlohmann::json& config);
+        RabbitAdapter(TestRunnerService& runner, const ManagementAPI* management, const AdapterContext& ctx);
         ~RabbitAdapter() override;
 
         std::string name() const override { return "RabbitMQ"; }
         void start() override;
         void stop() override;
+        void notifyOnline() override;
 
     private:
         // --- Event loop (runs in event_loop_thread_) ---
@@ -80,8 +85,7 @@ class RabbitAdapter : public TestExecutionAdapter {
         // --- AMQP-CPP objects (accessed ONLY from event loop thread) ---
         std::unique_ptr<UvAmqpHandler> handler_;
         std::unique_ptr<AMQP::Connection> connection_;
-        std::unique_ptr<AMQP::Channel> correctness_channel_;
-        std::unique_ptr<AMQP::Channel> performance_channel_;
+        std::unique_ptr<AMQP::Channel> task_channel_;
         std::unique_ptr<AMQP::Channel> status_channel_;
         std::unique_ptr<AMQP::Channel> publish_channel_;
 
@@ -108,9 +112,9 @@ class RabbitAdapter : public TestExecutionAdapter {
         void onControlMessage(const AMQP::Message& msg, uint64_t tag, bool redelivered);
 
         // --- Control message dispatch ---
-        using ReplyFn = std::function<void(const std::string&, nlohmann::json)>;
-        using ControlHandler = std::function<void(const nlohmann::json&, const ReplyFn&)>;
-        std::unordered_map<std::string, ControlHandler> control_handlers_;
+        using ReplyFn = std::function<void(const std::string &, nlohmann::json)>;
+        using ControlHandler = std::function<void(const nlohmann::json &, const ReplyFn &)>;
+        std::unordered_map<control_type, ControlHandler> control_handlers_;
         void setupControlHandlers();
 
         // --- Publishing (event loop thread only) ---
@@ -129,6 +133,6 @@ class RabbitAdapter : public TestExecutionAdapter {
         );
 
         // --- Node lifecycle ---
-        void publishNodeEvent(const std::string& type);
+        void publishNodeEvent(node_event_type type);
 
 };

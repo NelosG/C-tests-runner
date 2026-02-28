@@ -13,12 +13,15 @@
  */
 
 #include <adapter_api.h>
+#include <adapter_context.h>
+#include <adapter_status.h>
 #include <config_utils.h>
 #include <dll_utils.h>
 #include <filesystem>
 #include <iostream>
 #include <map>
 #include <mutex>
+#include <resource_manager.h>
 #include <string>
 #include <test_runner_service.h>
 #include <transport_adapter.h>
@@ -30,10 +33,18 @@ namespace fs = std::filesystem;
 
 class AdapterManager {
     public:
-        AdapterManager(TestRunnerService& runner, fs::path adapters_dir,
-                       fs::path config_dir = {}, fs::path exe_dir = {})
+        AdapterManager(
+            TestRunnerService& runner,
+            fs::path adapters_dir,
+            fs::path config_dir = {},
+            fs::path exe_dir = {},
+            std::string node_id = {},
+            ResourceManager* resource_manager = nullptr
+        )
             : runner_(runner), adapters_dir_(std::move(adapters_dir)),
-              config_dir_(std::move(config_dir)), exe_dir_(std::move(exe_dir)) {
+              config_dir_(std::move(config_dir)), exe_dir_(std::move(exe_dir)),
+              node_id_(std::move(node_id)),
+              resource_manager_(resource_manager) {
             scanAvailableAdapters();
             buildManagementAPI();
         }
@@ -107,7 +118,7 @@ class AdapterManager {
         }
 
     private:
-        using CreateFn = TransportAdapter* (*)(TestRunnerService*, const ManagementAPI*, const char*);
+        using CreateFn = TransportAdapter* (*)(TestRunnerService*, const ManagementAPI*, const AdapterContext*);
         using DestroyFn = void (*)(TransportAdapter*);
         using NameFn = const char* (*)();
 
@@ -123,18 +134,19 @@ class AdapterManager {
         fs::path adapters_dir_;
         fs::path config_dir_;
         fs::path exe_dir_;
+        std::string node_id_;
+        ResourceManager* resource_manager_;
         ManagementAPI mgmt_api_{};
 
         /// Display path relative to exe_dir_ with forward slashes.
         std::string relPath(const fs::path& p) const {
             if(exe_dir_.empty() || p.empty()) return p.generic_string();
-            try { return fs::proximate(p, exe_dir_).generic_string(); }
-            catch(...) { return p.generic_string(); }
+            try { return fs::proximate(p, exe_dir_).generic_string(); } catch(...) { return p.generic_string(); }
         }
 
         std::map<std::string, std::string> available_;   ///< name → DLL path
         std::map<std::string, ManagedAdapter> loaded_;    ///< name → running adapter
-        mutable std::mutex mutex_;
+        mutable std::recursive_mutex mutex_;
 
         /// Build JSON array of all adapters — caller must hold mutex_.
         nlohmann::json buildAdapterListLocked() const {
@@ -144,7 +156,7 @@ class AdapterManager {
                 nlohmann::json entry = {
                     {"name", name},
                     {"dllPath", relPath(path)},
-                    {"status", is_loaded ? "running" : "available"}
+                    {"status", to_string(is_loaded ? adapter_status::running : adapter_status::available)}
                 };
                 if(is_loaded) {
                     entry["config"] = loaded_.at(name).config;
@@ -182,6 +194,59 @@ class AdapterManager {
 
             mgmt_api_.free_string = [](void*, const char* str) {
                 delete[] str;
+            };
+
+            // Resource provider management callbacks
+            mgmt_api_.load_resource_provider = [](
+                void* ctx,
+                const char* name,
+                const nlohmann::json& config
+            ) -> bool {
+                    auto* self = static_cast<AdapterManager*>(ctx);
+                    if(!self->resource_manager_) return false;
+                    return self->resource_manager_->load(name, config);
+                };
+
+            mgmt_api_.unload_resource_provider = [](void* ctx, const char* name) -> bool {
+                auto* self = static_cast<AdapterManager*>(ctx);
+                if(!self->resource_manager_) return false;
+                return self->resource_manager_->unload(name);
+            };
+
+            mgmt_api_.list_resource_providers = [](void* ctx) -> const char* {
+                auto* self = static_cast<AdapterManager*>(ctx);
+                if(!self->resource_manager_) {
+                    const char* empty = "[]";
+                    char* buf = new char[3];
+                    std::memcpy(buf, empty, 3);
+                    return buf;
+                }
+                return self->resource_manager_->listProvidersAlloc();
+            };
+
+            mgmt_api_.list_available_resource_providers = [](void* ctx) -> const char* {
+                auto* self = static_cast<AdapterManager*>(ctx);
+                if(!self->resource_manager_) {
+                    const char* empty = "[]";
+                    char* buf = new char[3];
+                    std::memcpy(buf, empty, 3);
+                    return buf;
+                }
+                return self->resource_manager_->listAvailableProvidersAlloc();
+            };
+
+            // Adapter config update callback
+            mgmt_api_.update_adapter_config = [](
+                void* ctx,
+                const char* name,
+                const nlohmann::json& patch
+            ) {
+                auto* self = static_cast<AdapterManager*>(ctx);
+                std::lock_guard lock(self->mutex_);
+                auto it = self->loaded_.find(name);
+                if(it != self->loaded_.end()) {
+                    it->second.config.merge_patch(patch);
+                }
             };
         }
 
@@ -236,14 +301,18 @@ class AdapterManager {
             }
 
             // Create adapter — pass runner, management callbacks, and config
-            const std::string config_str = effective_config.dump();
-            TransportAdapter* adapter = create_fn(&runner_, &mgmt_api_, config_str.c_str());
+            AdapterContext ctx{effective_config, node_id_, name};
+            TransportAdapter* adapter = create_fn(&runner_, &mgmt_api_, &ctx);
             if(!adapter) {
                 std::cerr << "[AdapterManager] '" << name
                     << "' create_adapter returned nullptr\n";
                 dll::free(handle);
                 return false;
             }
+
+            // Pre-register so the adapter sees itself in transports during start()
+            // and can call update_adapter_config to enrich its stored config.
+            loaded_[name] = {handle, adapter, destroy_fn, name, effective_config};
 
             // Start adapter
             // On failure, both destroy_fn and dll::free must be called OUTSIDE the
@@ -264,14 +333,39 @@ class AdapterManager {
                 start_failed = true;
             }
             if(start_failed) {
+                loaded_.erase(name);
                 // Exception is fully destroyed here — safe to call DLL code
                 try { destroy_fn(adapter); } catch(...) {}
                 dll::free(handle);
                 return false;
             }
 
-            loaded_[name] = {handle, adapter, destroy_fn, name, effective_config};
             std::cout << "[AdapterManager] '" << name << "' started\n";
+
+            // Notify online: publish registration / online events.
+            // Called AFTER start() succeeds and adapter is in loaded_ map,
+            // so buildTransportsList sees this adapter + all previously loaded.
+            bool notify_failed = false;
+            try {
+                adapter->notifyOnline();
+            } catch(const std::exception& e) {
+                std::cerr << "[AdapterManager] '" << name
+                    << "' online notification failed: " << e.what() << "\n";
+                notify_failed = true;
+            } catch(...) {
+                std::cerr << "[AdapterManager] '" << name
+                    << "' online notification failed (unknown error)\n";
+                notify_failed = true;
+            }
+            if(notify_failed) {
+                loaded_.erase(name);
+                try { adapter->stop(); } catch(...) {}
+                // Exception fully destroyed — safe to call DLL code
+                try { destroy_fn(adapter); } catch(...) {}
+                dll::free(handle);
+                return false;
+            }
+
             return true;
         }
 
@@ -325,8 +419,11 @@ class AdapterManager {
                 std::string stem = entry.path().stem().string(); // "http_adapter"
                 std::string adapter_name;
                 if(stem.size() > adapter_suffix.size()
-                   && stem.compare(stem.size() - adapter_suffix.size(),
-                                   adapter_suffix.size(), adapter_suffix) == 0) {
+                    && stem.compare(
+                        stem.size() - adapter_suffix.size(),
+                        adapter_suffix.size(),
+                        adapter_suffix
+                    ) == 0) {
                     adapter_name = stem.substr(0, stem.size() - adapter_suffix.size());
                 } else {
                     adapter_name = stem;
