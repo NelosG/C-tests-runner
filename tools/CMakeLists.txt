@@ -1,17 +1,4 @@
 # ============================================
-# CLI executable — local dev/debug
-# ============================================
-add_executable(run src/main.cpp)
-target_link_libraries(run PRIVATE test_engine)
-
-# Clean plugins directory before rebuilding 'run'
-add_custom_command(TARGET run PRE_LINK
-        COMMAND ${CMAKE_COMMAND} -E remove_directory "${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/plugins"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/plugins"
-        COMMENT "Cleaning plugins directory"
-)
-
-# ============================================
 # Integration test — full pipeline without HTTP
 # ============================================
 add_executable(test_server_pipeline src/test_server_pipeline.cpp)
@@ -49,10 +36,3 @@ if(UNIX)
             INSTALL_RPATH "$ORIGIN/../lib"
     )
 endif()
-
-# ============================================
-# Install rules
-# ============================================
-install(TARGETS run
-        RUNTIME DESTINATION bin
-)

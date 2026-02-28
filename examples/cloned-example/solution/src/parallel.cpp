@@ -25,7 +25,8 @@ namespace parallel {
         {
             const int idThread = par::thread_id();
 
-            OMP_SINGLE() {
+            OMP_SINGLE()
+            {
                 last_value_chunk_array[0] = 0;
             }
 

@@ -7,7 +7,8 @@
 #   tests/         — example test plugins and student solutions
 #   adapters/      — transport plugins (HTTP, RabbitMQ) loaded at runtime
 #   tools/         — CLI runner, integration tests, mock orchestrators
-#   server_main.cpp — entry point (server mode or CLI mode)
+#   server.cpp — adapter-based server mode
+#   cli.cpp    — standalone CLI test runner
 # ==========================================================================
 cmake_minimum_required(VERSION 3.14)
 project(c-test-runner C CXX)
@@ -50,20 +51,36 @@ add_subdirectory(parallel_lib)   # Student-facing OpenMP wrappers (shared lib)
 add_subdirectory(test_engine)    # Core test framework (shared lib)
 add_subdirectory(tests)          # Example test plugins (DLLs)
 add_subdirectory(adapters)       # Transport adapters: HTTP, RabbitMQ (DLLs)
+add_subdirectory(resource)       # Resource providers: git, local (DLLs)
 add_subdirectory(tools)          # CLI tools and mock orchestrators
 
 # ============================================
 # Server executable — loads adapter DLLs at runtime
 # ============================================
-add_executable(server server_main.cpp)
+add_executable(server server.cpp)
 target_link_libraries(server PRIVATE test_engine nlohmann_json::nlohmann_json)
-target_include_directories(server PRIVATE ${CMAKE_SOURCE_DIR}/adapters/include)
+target_include_directories(server PRIVATE
+        ${CMAKE_SOURCE_DIR}/adapters/include
+        ${CMAKE_SOURCE_DIR}/resource/include
+        ${CMAKE_SOURCE_DIR}
+)
 
-# Create adapters output directory
+add_executable(cli cli.cpp)
+target_link_libraries(cli PRIVATE test_engine nlohmann_json::nlohmann_json)
+target_include_directories(cli PRIVATE
+        ${CMAKE_SOURCE_DIR}/resource/include
+        ${CMAKE_SOURCE_DIR}
+)
+
+# resource/include headers are part of the test_engine public API (resource_manager.h uses them)
+target_include_directories(test_engine PUBLIC ${CMAKE_SOURCE_DIR}/resource/include)
+
+# Create output directories for plugins
 file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/adapters)
+file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/resource_providers)
 
 if(UNIX)
-    set_target_properties(server PROPERTIES
+    set_target_properties(server cli PROPERTIES
             BUILD_RPATH "${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}"
             INSTALL_RPATH "$ORIGIN/../lib"
     )

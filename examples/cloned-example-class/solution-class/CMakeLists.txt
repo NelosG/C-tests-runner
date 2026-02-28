@@ -8,7 +8,7 @@ file(GLOB_RECURSE SOLUTION_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.h ${CMAKE_C
 # SHARED for dynamic loading by server
 add_library(student_solution SHARED ${SOLUTION_SOURCES})
 
-target_include_directories(student_solution PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(student_solution PUBLIC include)
 target_link_libraries(student_solution PUBLIC parallel_lib)
 
 # Export all symbols on Windows

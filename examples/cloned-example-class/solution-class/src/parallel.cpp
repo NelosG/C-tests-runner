@@ -21,10 +21,12 @@ void par_scan(const size_t n, const T* in, T* out) {
 
     long long last_value_chunk_array[num_threads + 1];
 
-    OMP_PARALLEL(default(shared)) {
+    OMP_PARALLEL(default(shared))
+    {
         const int idThread = par::thread_id();
 
-        OMP_SINGLE() {
+        OMP_SINGLE()
+        {
             last_value_chunk_array[0] = 0;
         }
 

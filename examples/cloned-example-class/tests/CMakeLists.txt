@@ -12,7 +12,7 @@ endif()
 # Plugin output directory
 file(MAKE_DIRECTORY ${PLUGIN_OUTPUT_DIR})
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+include_directories(include)
 
 # ============================================
 # Helper function to add a plugin target

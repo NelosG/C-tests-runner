@@ -9,7 +9,7 @@ namespace parallel {
     template<typename T>
     void par_scan(size_t n, const T* in, T* out);
 
-    void scan(const std::vector<long long>& array, std::vector<long long>& result) {
+    void scanN(const std::vector<long long>& array, std::vector<long long>& result) {
         par_scan(array.size(), array.data(), result.data());
     }
 
@@ -20,10 +20,12 @@ namespace parallel {
 
         long long last_value_chunk_array[num_threads + 1];
 
-        OMP_PARALLEL(default(shared)) {
+        OMP_PARALLEL(default(shared))
+        {
             const int idThread = par::thread_id();
 
-            OMP_SINGLE() {
+            OMP_SINGLE()
+            {
                 last_value_chunk_array[0] = 0;
             }
 
