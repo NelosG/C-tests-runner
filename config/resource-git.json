@@ -1,0 +1,5 @@
+{
+    "cacheDir": "../cache/git",
+    "cacheTtlSeconds": 604800,
+    "cleanupIntervalSeconds": 3600
+}
