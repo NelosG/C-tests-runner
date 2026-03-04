@@ -1,4 +1,5 @@
 {
+    "host": "localhost",
     "port": 8090,
     "registerUrl": "http://localhost:9000/api/register",
     "registrationTimeoutSec": 10

@@ -25,7 +25,7 @@ FetchContent_MakeAvailable(amqpcpp libuv)
 add_library(rabbit_adapter SHARED rabbit_adapter.cpp)
 
 target_include_directories(rabbit_adapter PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}          # rabbit_adapter.h, uv_amqp_handler.h
+        ${CMAKE_CURRENT_SOURCE_DIR}          # rabbit_adapter.h, uv_amqp_handler.h, control_type.h
         ${CMAKE_SOURCE_DIR}/adapters/include # transport_adapter.h, adapter_api.h
 )
 
