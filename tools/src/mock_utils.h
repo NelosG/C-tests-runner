@@ -35,6 +35,7 @@ struct RunArgs {
     std::vector<std::string> solutions;
     std::string mode = "all";
     int threads = 4;
+    long long memory_limit_mb = -1; ///< -1 means "not specified" (use server default)
 };
 
 inline bool parseRunArgs(const std::string& line, RunArgs& args) {
@@ -51,6 +52,7 @@ inline bool parseRunArgs(const std::string& line, RunArgs& args) {
             else if(t == "--solution" && i + 1 < tokens.size()) args.solutions.push_back(tokens[++i]);
             else if(t == "--mode" && i + 1 < tokens.size()) args.mode = tokens[++i];
             else if(t == "--threads" && i + 1 < tokens.size()) args.threads = std::stoi(tokens[++i]);
+            else if(t == "--memory" && i + 1 < tokens.size()) args.memory_limit_mb = std::stoll(tokens[++i]);
         }
     } catch(const std::exception& e) {
         std::cerr << "[Mock] Invalid argument: " << e.what() << "\n";
@@ -59,7 +61,7 @@ inline bool parseRunArgs(const std::string& line, RunArgs& args) {
 
     if(args.test_id.empty() || args.test_dir.empty() || args.solutions.empty()) {
         std::cerr << "[Mock] Usage: run --test-id <id> --test-dir <dir> --solution <dir>"
-            " [--solution <dir2>] [--mode all] [--threads 4]\n";
+            " [--solution <dir2>] [--mode all] [--threads 4] [--memory 1024]\n";
         return false;
     }
     return true;

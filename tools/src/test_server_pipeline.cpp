@@ -149,7 +149,7 @@ static std::pair<int, int> runSolution(
 
         nlohmann::json report;
         report["solution"] = sol_label;
-        report["status"] = "failed";
+        report["status"] = to_string(job_status::failed);
         if(plugins_failed > 0) {
             report["error"] = std::to_string(plugins_failed) + " of "
                 + std::to_string(test_result.plugin_paths.size())
@@ -224,16 +224,20 @@ static std::pair<int, int> runSolution(
                 if(!tr.passed) correctness_passed = false;
             }
         }
-        all_results.insert(all_results.end(),
+        all_results.insert(
+            all_results.end(),
             std::make_move_iterator(results.begin()),
-            std::make_move_iterator(results.end()));
+            std::make_move_iterator(results.end())
+        );
     }
     if(mode == "performance" || (mode == "all" && correctness_passed)) {
         auto [results, tc] = run_mode("performance", par::Mode::MONITOR, ScenarioType::PERFORMANCE);
         report["performance"] = TestScenarioResultConverter::to_grouped_json(results, tc, true);
-        all_results.insert(all_results.end(),
+        all_results.insert(
+            all_results.end(),
             std::make_move_iterator(results.begin()),
-            std::make_move_iterator(results.end()));
+            std::make_move_iterator(results.end())
+        );
     } else if(mode == "all" && !correctness_passed) {
         std::cout << "[" << sol_label << "] Correctness failed -> performance skipped\n";
         report["performanceSkipped"] = true;
@@ -383,8 +387,13 @@ int main(int argc, char** argv) {
         }
 
         auto [total, passed] = runSolution(
-            sol_dir, test_dir, mode, threads,
-            do_cleanup, builder);
+            sol_dir,
+            test_dir,
+            mode,
+            threads,
+            do_cleanup,
+            builder
+        );
 
         grand_total += total;
         grand_passed += passed;
