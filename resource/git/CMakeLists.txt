@@ -5,7 +5,7 @@ add_library(resource_git SHARED resource_git.cpp resource_git.h)
 target_include_directories(resource_git PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}          # resource_git.h
         ${CMAKE_SOURCE_DIR}/resource/include # resource_provider.h, resource_context.h, register_resource_provider.h
-        ${CMAKE_SOURCE_DIR}/test_engine/src  # process_utils.h (header-only)
+        ${CMAKE_SOURCE_DIR}/server_core/src  # process_utils.h (header-only)
 )
 
 target_link_libraries(resource_git PRIVATE
