@@ -8,8 +8,8 @@
  * pinning threads to a specific NUMA node's physical cores, and
  * setting memory allocation policy to prefer local memory.
  *
- * - Linux: sched_setaffinity(), /sys/devices/system/node/ topology,
- *          set_mempolicy() for memory binding.
+ * - Linux: libnuma (default, CMake USE_LIBNUMA=ON) or fallback to
+ *          sched_setaffinity() / set_mempolicy() with sysfs parsing.
  * - Windows: GetLogicalProcessorInformationEx(), SetProcessAffinityMask().
  *            NUMA memory binding is best-effort on Windows.
  */
@@ -40,18 +40,39 @@ namespace numa {
  * @param node NUMA node index (0-based).
  * @return True if affinity was set successfully.
  */
-    bool pinToNode(int node);
+    bool pin_to_node(int node);
 
     /**
  * @brief Set memory allocation policy to prefer the given NUMA node.
  * @param node NUMA node index.
  * @return True if policy was set (Linux), always true on Windows (best-effort).
  */
-    bool setMemoryPolicy(int node);
+    bool set_memory_policy(int node);
 
     /**
  * @brief Reset CPU affinity and memory policy to system defaults.
  */
     void reset();
+
+    /**
+ * @brief Pin all OMP threads (master + workers) to the given NUMA node.
+ *
+ * Uses #pragma omp parallel to reach every thread in the pool and sets
+ * per-thread affinity to the node's physical cores.
+ * Caller must set omp_set_num_threads() before calling.
+ *
+ * @param node NUMA node index (0-based).
+ * @return True if affinity was set on all threads successfully.
+ */
+    bool pin_omp_threads(int node);
+
+    /**
+ * @brief Reset affinity for all OMP threads to system defaults.
+ *
+ * Uses #pragma omp parallel to reach every thread and sets each one's
+ * affinity mask to all available CPUs.
+ * Caller must ensure omp_set_num_threads() covers all pool threads.
+ */
+    void reset_omp_threads();
 
 } // namespace numa
