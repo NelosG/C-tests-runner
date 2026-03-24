@@ -1,0 +1,41 @@
+# Runner build wrapper (rendered from cmake/runner_wrapper.cmake.in by
+# CMakeGenerator). For the list of placeholders see cmake_generator.cpp.
+
+cmake_minimum_required(VERSION 3.14)
+project(runner_build CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+@CILK_FLAGS_BLOCK@
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/block_network.cmake)
+
+# Base runner_lib (the runner.h API).
+add_library(runner_lib STATIC IMPORTED GLOBAL)
+set_target_properties(runner_lib PROPERTIES
+    IMPORTED_LOCATION "@RUNNER_LIB_PATH@"
+    IMPORTED_LOCATION_RELEASE "@RUNNER_LIB_PATH@"
+    IMPORTED_LOCATION_DEBUG "@RUNNER_LIB_PATH@"
+    INTERFACE_INCLUDE_DIRECTORIES "@RUNNER_LIB_INCLUDE@"
+)
+
+@FRAMEWORK_BLOCK@
+
+# Student's solution must define a target named `student_solution`.
+add_subdirectory(solution)
+if(NOT TARGET student_solution)
+    message(FATAL_ERROR "Student must define 'student_solution' target in solution/CMakeLists.txt")
+endif()
+@STUDENT_EXTRA_LINK@
+
+# Runner exe: teacher's main.cpp linked against student_solution + the framework variant.
+add_executable(runner "@RUNNER_MAIN_PATH@")
+target_link_libraries(runner PRIVATE student_solution @RUNNER_VARIANT@ runner_lib)
+target_include_directories(runner PRIVATE "@TEST_INCLUDE_DIR@")
+set_target_properties(runner PROPERTIES BUILD_RPATH_USE_ORIGIN ON)
+set_target_properties(student_solution PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+@EXTRA_LIB_DIRS_BLOCK@
