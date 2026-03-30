@@ -1,0 +1,26 @@
+{
+    "name": "Correctness.JsonBasic",
+    "type": "correctness",
+    "tests": [
+        {
+            "name": "small_sort",
+            "input": { "array": [5, 3, 1, 4, 2] },
+            "output": { "sorted": [1, 2, 3, 4, 5] }
+        },
+        {
+            "name": "already_sorted",
+            "input": { "array": [1, 2, 3] },
+            "output": { "sorted": [1, 2, 3] }
+        },
+        {
+            "name": "single_element",
+            "input": { "array": [42] },
+            "output": { "sorted": [42] }
+        },
+        {
+            "name": "empty_array",
+            "input": { "array": [] },
+            "output": { "sorted": [] }
+        }
+    ]
+}

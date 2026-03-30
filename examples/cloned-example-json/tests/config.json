@@ -1,0 +1,6 @@
+{
+    "name": "Sum/Max scan (sequential)",
+    "mode": "correctness",
+    "allowedFrameworks": [],
+    "allowedPackages": []
+}
