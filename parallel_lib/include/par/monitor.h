@@ -74,7 +74,7 @@ namespace par {
         int max_threads = 0;
         Stats stats;
 
-        void resetStats();
+        void reset_stats();
     };
 
     /**
@@ -85,7 +85,7 @@ namespace par {
         // ---- Context management (for concurrent jobs) ----
 
         /** @brief Create a new independent monitor context. */
-        std::unique_ptr<MonitorContext> createContext();
+        std::unique_ptr<MonitorContext> create_context();
 
         /**
      * @brief Set the active context for the calling thread.
@@ -93,21 +93,21 @@ namespace par {
      *
      * This is propagated to OMP child threads via OMP_PARALLEL / OMP_TASK macros.
      */
-        void activateContext(MonitorContext* ctx);
+        void activate_context(MonitorContext* ctx);
 
         // ---- Convenience API (operates on the active context) ----
 
-        void setMode(Mode mode);
-        Mode getMode();
+        void set_mode(Mode mode);
+        Mode get_mode();
 
-        void setMaxThreads(int n);
-        int getMaxThreads();
+        void set_max_threads(int n);
+        int get_max_threads();
 
         /** @brief Access the active context's statistics. */
         Stats& stats();
 
         /** @brief Reset all counters to zero in the active context. */
-        void resetStats();
+        void reset_stats();
 
         /**
      * @brief Internal hooks called by pragma.h macros/guards.
@@ -115,30 +115,30 @@ namespace par {
      */
         namespace detail {
             /** @brief Get the active MonitorContext* for the calling thread. */
-            MonitorContext* currentContext();
+            MonitorContext* current_context();
 
             /** @brief Set the active MonitorContext* for the calling thread. */
-            void setContext(MonitorContext* ctx);
+            void set_context(MonitorContext* ctx);
 
-            void onParallelBegin();
-            void onParallelEnd();
-            void onTaskCreate();
-            void onSingle();
-            void onTaskwait();
-            void onBarrier();
-            void onCritical();
-            void onForLoop();
-            void onAtomic();
-            void onSections();
-            void onMaster();
-            void onOrdered();
-            void onTaskgroup();
-            void onSimd();
-            void onCancel();
-            void onFlush();
-            void onTaskyield();
+            void on_parallel_begin();
+            void on_parallel_end();
+            void on_task_create();
+            void on_single();
+            void on_taskwait();
+            void on_barrier();
+            void on_critical();
+            void on_for_loop();
+            void on_atomic();
+            void on_sections();
+            void on_master();
+            void on_ordered();
+            void on_taskgroup();
+            void on_simd();
+            void on_cancel();
+            void on_flush();
+            void on_taskyield();
 
-            void maybeInjectDelay();
+            void maybe_inject_delay();
 
             /**
              * @brief Begin work timing for the calling thread.
@@ -148,17 +148,17 @@ namespace par {
              * Called by: ForGuard, SectionsGuard, ForSimdGuard, TaskloopGuard,
              * TaskloopSimdGuard, SingleGuard, TaskBody, CtxInit (both ctors).
              */
-            long long workBegin();
+            long long work_begin();
 
             /**
              * @brief End work timing and accumulate elapsed time into work_ns.
-             * @param start_ns Value returned by workBegin(); 0 means nested (no-op).
+             * @param start_ns Value returned by work_begin(); 0 means nested (no-op).
              *
              * Resets the nesting guard so the next outer region can resume timing.
              * All callers are RAII guards - tl_in_work_timing is guaranteed to be
              * reset even during stack unwinding from exceptions.
              */
-            void workEnd(long long start_ns);
+            void work_end(long long start_ns);
 
             // ---- Span (critical-path) tracking ----
 
@@ -174,17 +174,17 @@ namespace par {
             };
 
             /** @brief Save current span TLS state (for nesting). */
-            SpanSaved spanSaveState();
+            SpanSaved span_save_state();
 
             /** @brief Restore previously saved span TLS state. */
-            void spanRestoreState(const SpanSaved& saved);
+            void span_restore_state(const SpanSaved& saved);
 
-            void spanInitRoot();
-            void spanFinalizeRoot();
-            SpanChildCtx spanPrepareChild();
-            SpanSaved spanEnterTask(const SpanChildCtx& ctx);
-            void spanExitTask(SpanSaved& saved, const SpanChildCtx& ctx);
-            void spanSyncChildren();
+            void span_init_root();
+            void span_finalize_root();
+            SpanChildCtx span_prepare_child();
+            SpanSaved span_enter_task(const SpanChildCtx& ctx);
+            void span_exit_task(SpanSaved& saved, const SpanChildCtx& ctx);
+            void span_sync_children();
         }
 
     } // namespace monitor

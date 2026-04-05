@@ -92,9 +92,11 @@
  * @endcode
  */
 
+// _PAR_OMP_INTERNAL signals the shadow omp.h to forward to the real system header
+#define _PAR_OMP_INTERNAL
 #include <omp.h>
+#undef _PAR_OMP_INTERNAL
 #include <par/monitor.h>
-#include <par/memory_guard.h>
 
 
 // ============================================================
@@ -113,23 +115,21 @@ namespace par {
     namespace macro {
 
         /**
-     * Wraps onParallelBegin() / onParallelEnd() around a parallel region.
+     * Wraps on_parallel_begin() / on_parallel_end() around a parallel region.
      * Used by OMP_PARALLEL via a for-loop trick.
      */
         struct ParallelGuard {
             MonitorContext* ctx;
-            MemoryContext* mem_ctx;
             bool done = false;
 
             ParallelGuard()
-                : ctx(monitor::detail::currentContext()),
-                  mem_ctx(memory::detail::currentContext()) {
-                monitor::detail::onParallelBegin();
+                : ctx(monitor::detail::current_context()) {
+                monitor::detail::on_parallel_begin();
             }
 
             void finalize() {
                 done = true;
-                monitor::detail::onParallelEnd();
+                monitor::detail::on_parallel_end();
             }
         };
 
@@ -138,8 +138,7 @@ namespace par {
             bool once = true;
 
             explicit ThreadInit(const ParallelGuard& g) {
-                monitor::detail::setContext(g.ctx);
-                memory::detail::setContext(g.mem_ctx);
+                monitor::detail::set_context(g.ctx);
             }
         };
 
@@ -153,16 +152,16 @@ namespace par {
             monitor::detail::SpanSaved outer_span;
 
             SingleGuard() {
-                monitor::detail::onSingle();
-                outer_span = monitor::detail::spanSaveState();
-                monitor::detail::spanInitRoot();
-                t0 = monitor::detail::workBegin();
+                monitor::detail::on_single();
+                outer_span = monitor::detail::span_save_state();
+                monitor::detail::span_init_root();
+                t0 = monitor::detail::work_begin();
             }
 
             ~SingleGuard() {
-                monitor::detail::workEnd(t0);
-                monitor::detail::spanFinalizeRoot();
-                monitor::detail::spanRestoreState(outer_span);
+                monitor::detail::work_end(t0);
+                monitor::detail::span_finalize_root();
+                monitor::detail::span_restore_state(outer_span);
             }
         };
 
@@ -174,14 +173,12 @@ namespace par {
             bool done = false;
             monitor::detail::SpanChildCtx span_ctx;
             MonitorContext* ctx;
-            MemoryContext* mem_ctx;
 
             TaskPre()
-                : ctx(monitor::detail::currentContext()),
-                  mem_ctx(memory::detail::currentContext()) {
-                monitor::detail::onTaskCreate();
-                monitor::detail::maybeInjectDelay();
-                span_ctx = monitor::detail::spanPrepareChild();
+                : ctx(monitor::detail::current_context()) {
+                monitor::detail::on_task_create();
+                monitor::detail::maybe_inject_delay();
+                span_ctx = monitor::detail::span_prepare_child();
             }
         };
 
@@ -193,15 +190,14 @@ namespace par {
             long long t0 = 0;
 
             explicit TaskBody(const TaskPre& pre) : span_ctx(pre.span_ctx) {
-                monitor::detail::setContext(pre.ctx);
-                memory::detail::setContext(pre.mem_ctx);
-                span_saved = monitor::detail::spanEnterTask(span_ctx);
-                t0 = monitor::detail::workBegin();
+                monitor::detail::set_context(pre.ctx);
+                span_saved = monitor::detail::span_enter_task(span_ctx);
+                t0 = monitor::detail::work_begin();
             }
 
             ~TaskBody() {
-                monitor::detail::workEnd(t0);
-                monitor::detail::spanExitTask(span_saved, span_ctx);
+                monitor::detail::work_end(t0);
+                monitor::detail::span_exit_task(span_saved, span_ctx);
             }
         };
 
@@ -234,86 +230,82 @@ namespace par {
 
             WorkTimedGuard() {
                 if(!MasterOnly || omp_get_thread_num() == 0) (Hooks(), ...);
-                t0 = monitor::detail::workBegin();
+                t0 = monitor::detail::work_begin();
             }
 
-            ~WorkTimedGuard() { monitor::detail::workEnd(t0); }
+            ~WorkTimedGuard() { monitor::detail::work_end(t0); }
         };
 
-        using ForGuard = WorkTimedGuard<true, &monitor::detail::onForLoop>;
-        using SectionsGuard = WorkTimedGuard<true, &monitor::detail::onSections>;
-        using ForSimdGuard = WorkTimedGuard<true, &monitor::detail::onForLoop, &monitor::detail::onSimd>;
-        using TaskloopGuard = WorkTimedGuard<false, &monitor::detail::onTaskCreate, &monitor::detail::onForLoop>;
+        using ForGuard = WorkTimedGuard<true, &monitor::detail::on_for_loop>;
+        using SectionsGuard = WorkTimedGuard<true, &monitor::detail::on_sections>;
+        using ForSimdGuard = WorkTimedGuard<true, &monitor::detail::on_for_loop, &monitor::detail::on_simd>;
+        using TaskloopGuard = WorkTimedGuard<false, &monitor::detail::on_task_create, &monitor::detail::on_for_loop>;
         using TaskloopSimdGuard = WorkTimedGuard<
-            false, &monitor::detail::onTaskCreate, &monitor::detail::onForLoop, &monitor::detail::onSimd>;
+            false, &monitor::detail::on_task_create, &monitor::detail::on_for_loop, &monitor::detail::on_simd>;
 
-        using CriticalGuard = SimpleGuard<&monitor::detail::onCritical>;
-        using MasterGuard = SimpleGuard<&monitor::detail::onMaster>;
-        using OrderedGuard = SimpleGuard<&monitor::detail::onOrdered, true>;
-        using SimdGuard = SimpleGuard<&monitor::detail::onSimd>;
-        using TaskgroupGuard = SimpleGuard<&monitor::detail::onTaskgroup>;
-        using AtomicGuard = SimpleGuard<&monitor::detail::onAtomic>;
+        using CriticalGuard = SimpleGuard<&monitor::detail::on_critical>;
+        using MasterGuard = SimpleGuard<&monitor::detail::on_master>;
+        using OrderedGuard = SimpleGuard<&monitor::detail::on_ordered, true>;
+        using SimdGuard = SimpleGuard<&monitor::detail::on_simd>;
+        using TaskgroupGuard = SimpleGuard<&monitor::detail::on_taskgroup>;
+        using AtomicGuard = SimpleGuard<&monitor::detail::on_atomic>;
 
         /**
      * Combined parallel + work-sharing guard (variadic).
-     * Calls onParallelBegin() + all ExtraHooks on construction,
-     * onParallelEnd() on finalize. Used by OMP_PARALLEL_FOR / etc.
+     * Calls on_parallel_begin() + all ExtraHooks on construction,
+     * on_parallel_end() on finalize. Used by OMP_PARALLEL_FOR / etc.
      */
         template<void(* ...ExtraHooks)()>
         struct ParallelComboGuard {
             MonitorContext* ctx;
-            MemoryContext* mem_ctx;
             bool done = false;
 
             ParallelComboGuard()
-                : ctx(monitor::detail::currentContext()),
-                  mem_ctx(memory::detail::currentContext()) {
-                monitor::detail::onParallelBegin();
+                : ctx(monitor::detail::current_context()) {
+                monitor::detail::on_parallel_begin();
                 (ExtraHooks(), ...);
             }
 
             void finalize() {
                 done = true;
-                monitor::detail::onParallelEnd();
+                monitor::detail::on_parallel_end();
             }
         };
 
-        using ParallelForGuard = ParallelComboGuard<&monitor::detail::onForLoop>;
-        using ParallelSectionsGuard = ParallelComboGuard<&monitor::detail::onSections>;
-        using ParallelForSimdGuard = ParallelComboGuard<&monitor::detail::onForLoop, &monitor::detail::onSimd>;
+        using ParallelForGuard = ParallelComboGuard<&monitor::detail::on_for_loop>;
+        using ParallelSectionsGuard = ParallelComboGuard<&monitor::detail::on_sections>;
+        using ParallelForSimdGuard = ParallelComboGuard<&monitor::detail::on_for_loop, &monitor::detail::on_simd>;
 
         /**
      * Context propagation + work timing for combined parallel constructs
      * (parallel for, parallel sections, parallel for simd).
      *
      * Used via firstprivate() - OpenMP copy-initializes one copy per worker thread,
-     * invoking the copy constructor which calls setContext() + workBegin() on that thread.
+     * invoking the copy constructor which calls set_context() + work_begin() on that thread.
      *
-     * The primary constructor also calls workBegin() so the master thread's work
+     * The primary constructor also calls work_begin() so the master thread's work
      * is timed. If the runtime copy-constructs for the master too, the nesting
-     * guard (tl_in_work_timing) prevents double-counting - the inner workBegin()
-     * returns 0 and its workEnd() is a no-op.
+     * guard (tl_in_work_timing) prevents double-counting - the inner work_begin()
+     * returns 0 and its work_end() is a no-op.
      *
      * Relies on the OpenMP guarantee that firstprivate copy-init runs on the new thread.
      */
         struct CtxInit {
             MonitorContext* ctx;
-            MemoryContext* mem_ctx;
             bool once = true;
             long long t0 = 0;
 
-            explicit CtxInit(MonitorContext* c, MemoryContext* mc)
-                : ctx(c), mem_ctx(mc) {
-                t0 = monitor::detail::workBegin();
+            explicit CtxInit(MonitorContext* c)
+                : ctx(c) {
+                t0 = monitor::detail::work_begin();
             }
 
-            CtxInit(const CtxInit& o) : ctx(o.ctx), mem_ctx(o.mem_ctx), once(o.once), t0(0) {
-                monitor::detail::setContext(ctx);
-                memory::detail::setContext(mem_ctx);
-                t0 = monitor::detail::workBegin();
+            CtxInit(const CtxInit& o) : ctx(o.ctx), once(o.once), t0(0) {
+                monitor::detail::set_context(ctx);
+                t0 = monitor::detail::work_begin();
             }
 
-            ~CtxInit() { if(t0 != 0) monitor::detail::workEnd(t0); }
+            ~CtxInit() { if(t0 != 0) monitor::detail::work_end(t0); }
         };
 
     }
@@ -451,7 +443,7 @@ namespace par {
  */
 #define OMP_PARALLEL_FOR(...) \
     for (::par::macro::ParallelForGuard _omp_pfg; !_omp_pfg.done; _omp_pfg.finalize()) \
-    for (::par::macro::CtxInit _omp_ci(_omp_pfg.ctx, _omp_pfg.mem_ctx); _omp_ci.once; _omp_ci.once = false) \
+    for (::par::macro::CtxInit _omp_ci(_omp_pfg.ctx); _omp_ci.once; _omp_ci.once = false) \
     _OMP_PRAGMA(omp parallel for shared(_omp_pfg) firstprivate(_omp_ci) __VA_ARGS__)
 
 /**
@@ -463,7 +455,7 @@ namespace par {
  */
 #define OMP_PARALLEL_FOR_SIMD(...) \
     for (::par::macro::ParallelForSimdGuard _omp_pfsg; !_omp_pfsg.done; _omp_pfsg.finalize()) \
-    for (::par::macro::CtxInit _omp_ci(_omp_pfsg.ctx, _omp_pfsg.mem_ctx); _omp_ci.once; _omp_ci.once = false) \
+    for (::par::macro::CtxInit _omp_ci(_omp_pfsg.ctx); _omp_ci.once; _omp_ci.once = false) \
     _OMP_PRAGMA(omp parallel for simd shared(_omp_pfsg) firstprivate(_omp_ci) __VA_ARGS__)
 
 /**
@@ -477,7 +469,7 @@ namespace par {
  */
 #define OMP_PARALLEL_SECTIONS(...) \
     for (::par::macro::ParallelSectionsGuard _omp_psg; !_omp_psg.done; _omp_psg.finalize()) \
-    for (::par::macro::CtxInit _omp_ci(_omp_psg.ctx, _omp_psg.mem_ctx); _omp_ci.once; _omp_ci.once = false) \
+    for (::par::macro::CtxInit _omp_ci(_omp_psg.ctx); _omp_ci.once; _omp_ci.once = false) \
     _OMP_PRAGMA(omp parallel sections shared(_omp_psg) firstprivate(_omp_ci) __VA_ARGS__)
 
 
@@ -487,19 +479,19 @@ namespace par {
 
 /** Barrier synchronization. */
 #define OMP_BARRIER \
-    do { ::par::monitor::detail::onBarrier(); \
+    do { ::par::monitor::detail::on_barrier(); \
          _Pragma("omp barrier") \
-         ::par::monitor::detail::maybeInjectDelay(); } while(0)
+         ::par::monitor::detail::maybe_inject_delay(); } while(0)
 
 /** Wait for child tasks to complete. */
 #define OMP_TASKWAIT \
-    do { ::par::monitor::detail::onTaskwait(); \
+    do { ::par::monitor::detail::on_taskwait(); \
          _Pragma("omp taskwait") \
-         ::par::monitor::detail::spanSyncChildren(); } while(0)
+         ::par::monitor::detail::span_sync_children(); } while(0)
 
 /** Yield the current task (hint to the runtime). */
 #define OMP_TASKYIELD \
-    do { ::par::monitor::detail::onTaskyield(); \
+    do { ::par::monitor::detail::on_taskyield(); \
          _Pragma("omp taskyield") } while(0)
 
 
@@ -527,9 +519,9 @@ namespace par {
 
 /** Memory flush. */
 #define OMP_FLUSH \
-    do { ::par::monitor::detail::onFlush(); _Pragma("omp flush") } while(0)
+    do { ::par::monitor::detail::on_flush(); _Pragma("omp flush") } while(0)
 #define OMP_FLUSH_SEQ \
-    do { ::par::monitor::detail::onFlush(); _Pragma("omp flush seq_cst") } while(0)
+    do { ::par::monitor::detail::on_flush(); _Pragma("omp flush seq_cst") } while(0)
 
 /** Taskgroup - all child tasks complete by end of block. */
 #define OMP_TASKGROUP \
@@ -556,23 +548,23 @@ namespace par {
 
 /** Cancel constructs. */
 #define OMP_CANCEL_PARALLEL \
-    do { ::par::monitor::detail::onCancel(); _Pragma("omp cancel parallel") } while(0)
+    do { ::par::monitor::detail::on_cancel(); _Pragma("omp cancel parallel") } while(0)
 #define OMP_CANCEL_FOR \
-    do { ::par::monitor::detail::onCancel(); _Pragma("omp cancel for") } while(0)
+    do { ::par::monitor::detail::on_cancel(); _Pragma("omp cancel for") } while(0)
 #define OMP_CANCEL_SECTIONS \
-    do { ::par::monitor::detail::onCancel(); _Pragma("omp cancel sections") } while(0)
+    do { ::par::monitor::detail::on_cancel(); _Pragma("omp cancel sections") } while(0)
 #define OMP_CANCEL_TASKGROUP \
-    do { ::par::monitor::detail::onCancel(); _Pragma("omp cancel taskgroup") } while(0)
+    do { ::par::monitor::detail::on_cancel(); _Pragma("omp cancel taskgroup") } while(0)
 
 /** Cancellation points. */
 #define OMP_CANCELLATION_POINT_PARALLEL \
-    do { ::par::monitor::detail::onCancel(); _Pragma("omp cancellation point parallel") } while(0)
+    do { ::par::monitor::detail::on_cancel(); _Pragma("omp cancellation point parallel") } while(0)
 #define OMP_CANCELLATION_POINT_FOR \
-    do { ::par::monitor::detail::onCancel(); _Pragma("omp cancellation point for") } while(0)
+    do { ::par::monitor::detail::on_cancel(); _Pragma("omp cancellation point for") } while(0)
 #define OMP_CANCELLATION_POINT_SECTIONS \
-    do { ::par::monitor::detail::onCancel(); _Pragma("omp cancellation point sections") } while(0)
+    do { ::par::monitor::detail::on_cancel(); _Pragma("omp cancellation point sections") } while(0)
 #define OMP_CANCELLATION_POINT_TASKGROUP \
-    do { ::par::monitor::detail::onCancel(); _Pragma("omp cancellation point taskgroup") } while(0)
+    do { ::par::monitor::detail::on_cancel(); _Pragma("omp cancellation point taskgroup") } while(0)
 
 /** SIMD vectorization (OpenMP 4.0+). */
 #define OMP_SIMD(...) \

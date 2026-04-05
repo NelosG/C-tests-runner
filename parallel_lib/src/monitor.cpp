@@ -28,8 +28,8 @@ namespace par {
     // Example: OMP_FOR inside OMP_SECTIONS - both have work-timed guards,
     // but only the outermost should accumulate elapsed time.
     //
-    // Mechanism: workBegin() checks the flag; if already set, returns 0
-    // (signaling "nested - don't time"). workEnd() skips accumulation
+    // Mechanism: work_begin() checks the flag; if already set, returns 0
+    // (signaling "nested - don't time"). work_end() skips accumulation
     // when start_ns == 0 and resets the flag when start_ns != 0.
     //
     // All callers are RAII guards (ForGuard, SectionsGuard, SingleGuard, etc.),
@@ -57,7 +57,7 @@ namespace par {
         ).count();
     }
 
-    static void atomicMax(std::atomic<long long>& target, long long value) {
+    static void atomic_max(std::atomic<long long>& target, long long value) {
         long long cur = target.load(std::memory_order_relaxed);
         while(value > cur) {
             if(target.compare_exchange_weak(cur, value, std::memory_order_relaxed))
@@ -71,7 +71,7 @@ namespace par {
 
     // ---- MonitorContext methods ----
 
-    void MonitorContext::resetStats() {
+    void MonitorContext::reset_stats() {
         stats.parallel_regions.store(0, std::memory_order_relaxed);
         stats.tasks_created.store(0, std::memory_order_relaxed);
         stats.single_regions.store(0, std::memory_order_relaxed);
@@ -97,30 +97,30 @@ namespace par {
 
     namespace monitor {
 
-        std::unique_ptr<MonitorContext> createContext() {
+        std::unique_ptr<MonitorContext> create_context() {
             return std::make_unique<MonitorContext>();
         }
 
-        void activateContext(MonitorContext* c) {
+        void activate_context(MonitorContext* c) {
             tl_ctx = c;
         }
 
-        void setMode(Mode mode) {
+        void set_mode(Mode mode) {
             ctx()->mode = mode;
         }
 
-        Mode getMode() {
+        Mode get_mode() {
             return ctx()->mode;
         }
 
-        void setMaxThreads(int n) {
+        void set_max_threads(int n) {
             ctx()->max_threads = n;
             if(n > 0) {
                 omp_set_num_threads(n);
             }
         }
 
-        int getMaxThreads() {
+        int get_max_threads() {
             return ctx()->max_threads;
         }
 
@@ -128,23 +128,23 @@ namespace par {
             return ctx()->stats;
         }
 
-        void resetStats() {
-            ctx()->resetStats();
+        void reset_stats() {
+            ctx()->reset_stats();
         }
 
         // ---- Internal detail hooks ----
 
         namespace detail {
 
-            MonitorContext* currentContext() {
+            MonitorContext* current_context() {
                 return tl_ctx;
             }
 
-            void setContext(MonitorContext* c) {
+            void set_context(MonitorContext* c) {
                 tl_ctx = c;
             }
 
-            void onParallelBegin() {
+            void on_parallel_begin() {
                 auto* c = ctx();
                 // Enforce thread count override before every parallel region
                 if(c->max_threads > 0) {
@@ -152,9 +152,8 @@ namespace par {
                     omp_set_dynamic(0);
                 }
 
-                if(c->mode != Mode::NORMAL) {
-                    c->stats.parallel_regions.fetch_add(1, std::memory_order_relaxed);
-
+                // Always track max threads (even in NORMAL mode for performance tests)
+                {
                     int mt = omp_get_max_threads();
                     int cur = c->stats.max_threads_observed.load(std::memory_order_relaxed);
                     while(mt > cur) {
@@ -162,116 +161,120 @@ namespace par {
                             break;
                     }
                 }
+
+                if(c->mode != Mode::NORMAL) {
+                    c->stats.parallel_regions.fetch_add(1, std::memory_order_relaxed);
+                }
             }
 
-            void onParallelEnd() {}
+            void on_parallel_end() {}
 
-            void onTaskCreate() {
+            void on_task_create() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.tasks_created.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onSingle() {
+            void on_single() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.single_regions.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onTaskwait() {
+            void on_taskwait() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.taskwaits.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onBarrier() {
+            void on_barrier() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.barriers.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onCritical() {
+            void on_critical() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.criticals.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onForLoop() {
+            void on_for_loop() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.for_loops.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onAtomic() {
+            void on_atomic() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.atomics.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onSections() {
+            void on_sections() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.sections.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onMaster() {
+            void on_master() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.masters.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onOrdered() {
+            void on_ordered() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.ordered.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onTaskgroup() {
+            void on_taskgroup() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.taskgroups.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onSimd() {
+            void on_simd() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.simd_constructs.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onCancel() {
+            void on_cancel() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.cancels.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onFlush() {
+            void on_flush() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.flushes.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void onTaskyield() {
+            void on_taskyield() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
                     c->stats.taskyields.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 
-            void maybeInjectDelay() {
+            void maybe_inject_delay() {
                 auto* c = ctx();
                 if(c->mode == Mode::STRESS) {
                     thread_local std::mt19937 gen(
@@ -287,7 +290,7 @@ namespace par {
 
             // ---- Work (T1) tracking ----
 
-            long long workBegin() {
+            long long work_begin() {
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL && !tl_in_work_timing) {
                     tl_in_work_timing = true;
@@ -296,7 +299,7 @@ namespace par {
                 return 0;
             }
 
-            void workEnd(long long start_ns) {
+            void work_end(long long start_ns) {
                 if(start_ns == 0) return;
                 auto* c = ctx();
                 if(c->mode != Mode::NORMAL) {
@@ -304,24 +307,24 @@ namespace par {
                     c->stats.work_ns.fetch_add(elapsed, std::memory_order_relaxed);
                 }
                 // Always reset the nesting guard, even if mode changed to NORMAL
-                // between workBegin() and workEnd(). Prevents tl_in_work_timing
+                // between work_begin() and work_end(). Prevents tl_in_work_timing
                 // from getting stuck permanently on this thread.
                 tl_in_work_timing = false;
             }
 
             // ---- Span (T_inf) tracking ----
 
-            SpanSaved spanSaveState() {
+            SpanSaved span_save_state() {
                 return {tl_span_depth, tl_strand_start_ns, tl_children_max};
             }
 
-            void spanRestoreState(const SpanSaved& saved) {
+            void span_restore_state(const SpanSaved& saved) {
                 tl_span_depth = saved.depth;
                 tl_strand_start_ns = saved.strand_start;
                 tl_children_max = saved.children_max;
             }
 
-            void spanInitRoot() {
+            void span_init_root() {
                 auto* c = ctx();
                 if(c->mode == Mode::NORMAL) return;
                 tl_span_depth = 0;
@@ -329,7 +332,7 @@ namespace par {
                 tl_strand_start_ns = now_ns();
             }
 
-            void spanFinalizeRoot() {
+            void span_finalize_root() {
                 auto* c = ctx();
                 if(c->mode == Mode::NORMAL) return;
 
@@ -352,10 +355,10 @@ namespace par {
                     }
                 }
 
-                atomicMax(c->stats.span_ns, tl_span_depth);
+                atomic_max(c->stats.span_ns, tl_span_depth);
             }
 
-            SpanChildCtx spanPrepareChild() {
+            SpanChildCtx span_prepare_child() {
                 auto* c = ctx();
                 if(c->mode == Mode::NORMAL) {
                     return {0, nullptr};
@@ -368,7 +371,7 @@ namespace par {
                 return {tl_span_depth, tl_children_max};
             }
 
-            SpanSaved spanEnterTask(const SpanChildCtx& span_ctx) {
+            SpanSaved span_enter_task(const SpanChildCtx& span_ctx) {
                 auto* c = ctx();
                 if(c->mode == Mode::NORMAL) return {};
 
@@ -383,7 +386,7 @@ namespace par {
                 return saved;
             }
 
-            void spanExitTask(SpanSaved& saved, const SpanChildCtx& span_ctx) {
+            void span_exit_task(SpanSaved& saved, const SpanChildCtx& span_ctx) {
                 auto* c = ctx();
                 // spanEnterTask also no-ops in NORMAL - TLS was never modified, nothing to restore
                 if(c->mode == Mode::NORMAL) return;
@@ -401,16 +404,16 @@ namespace par {
                 long long final_depth = tl_span_depth;
 
                 if(span_ctx.parent_children_max) {
-                    atomicMax(*span_ctx.parent_children_max, final_depth);
+                    atomic_max(*span_ctx.parent_children_max, final_depth);
                 }
-                atomicMax(c->stats.span_ns, final_depth);
+                atomic_max(c->stats.span_ns, final_depth);
 
                 tl_span_depth = saved.depth;
                 tl_strand_start_ns = saved.strand_start;
                 tl_children_max = std::move(saved.children_max);
             }
 
-            void spanSyncChildren() {
+            void span_sync_children() {
                 auto* c = ctx();
                 if(c->mode == Mode::NORMAL) return;
                 long long now = now_ns();

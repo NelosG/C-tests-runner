@@ -4,7 +4,7 @@ set(CMAKE_CXX_STANDARD 17)
 
 find_package(OpenMP REQUIRED)
 
-add_library(parallel_lib SHARED src/monitor.cpp src/memory_guard.cpp)
+add_library(parallel_lib SHARED src/monitor.cpp)
 
 target_include_directories(parallel_lib PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -21,3 +21,7 @@ if(UNIX)
     find_package(Threads REQUIRED)
     target_link_libraries(parallel_lib PUBLIC Threads::Threads)
 endif()
+
+# Windows: import library (.dll.a) is linked into student runners (openmp framework).
+# Override the global throwaway ARCHIVE dir back to OUTPUT_DIR.
+set_target_properties(parallel_lib PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${OUTPUT_DIR})
