@@ -1,0 +1,30 @@
+# Test-plugin build wrapper (rendered from cmake/test_plugin_wrapper.cmake.in
+# by CMakeGenerator). The teacher writes a real tests/CMakeLists.txt - this
+# wrapper just imports test_engine + runner_lib and delegates the build via
+# add_subdirectory(). For the list of placeholders see cmake_generator.cpp.
+
+cmake_minimum_required(VERSION 3.14)
+project(test_plugin_build CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Imported test_engine carries the platform-specific defines via INTERFACE,
+# so any plugin that links test_engine picks them up automatically.
+add_library(test_engine SHARED IMPORTED GLOBAL)
+set_target_properties(test_engine PROPERTIES
+    IMPORTED_LOCATION "@TEST_ENGINE_LIB@"
+    @TEST_ENGINE_IMPLIB_LINE@
+    INTERFACE_INCLUDE_DIRECTORIES "@TEST_ENGINE_INCLUDES@"
+    @TEST_ENGINE_INTERFACE_FLAGS@
+)
+
+add_library(runner_lib STATIC IMPORTED GLOBAL)
+set_target_properties(runner_lib PROPERTIES
+    IMPORTED_LOCATION "@RUNNER_LIB_PATH@"
+    INTERFACE_INCLUDE_DIRECTORIES "@RUNNER_LIB_INCLUDE@"
+)
+
+@PLATFORM_GLOBAL@
+
+# Hand the build over to the teacher's real CMakeLists.txt.
+add_subdirectory("@TEACHER_TESTS_DIR@" tests_build)
