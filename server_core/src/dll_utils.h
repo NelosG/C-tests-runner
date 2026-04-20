@@ -36,7 +36,7 @@ namespace dll {
     }
 
     /// Resolve a symbol from a loaded library. Returns nullptr on failure.
-    inline void* getSym(void* handle, const char* sym) {
+    inline void* get_sym(void* handle, const char* sym) {
         #ifdef _WIN32
         return reinterpret_cast<void*>(
             GetProcAddress(static_cast<HMODULE>(handle), sym));
@@ -46,7 +46,7 @@ namespace dll {
     }
 
     /// Get the last DLL loading error message.
-    inline std::string lastError() {
+    inline std::string last_error() {
         #ifdef _WIN32
         DWORD err = GetLastError();
         if(err == 0) return "";

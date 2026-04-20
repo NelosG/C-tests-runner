@@ -35,19 +35,6 @@ inline bool is_valid_test_mode(const std::string& s) {
     return s == "correctness" || s == "performance" || s == "all";
 }
 
-/// Queue lane (derived from test_mode).
-inline std::string lane_for_mode(test_mode m) {
-    return (m == test_mode::performance || m == test_mode::all)
-        ? to_string(test_mode::performance)
-        : to_string(test_mode::correctness);
-}
-
-inline std::string lane_for_mode(const std::string& mode) {
-    return (mode == to_string(test_mode::performance) || mode == to_string(test_mode::all))
-        ? to_string(test_mode::performance)
-        : to_string(test_mode::correctness);
-}
-
 /// Job lifecycle status.
 enum class job_status {
     queued,

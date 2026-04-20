@@ -5,8 +5,10 @@
  * @brief Cross-platform command execution utilities (header-only).
  */
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 struct CommandResult {
@@ -15,9 +17,40 @@ struct CommandResult {
     bool failed() const { return exit_code != 0; }
 };
 
-inline CommandResult runCommand(const std::string& cmd) {
+/// Escape and quote a string for safe interpolation into a shell command.
+/// Prevents command injection via crafted paths or arguments.
+inline std::string shell_quote(const std::string& arg) {
+    #ifdef _WIN32
+    // Windows cmd: wrap in double quotes, escape internal double quotes and backslashes
+    std::string result = "\"";
+    for(char c : arg) {
+        if(c == '"') result += "\\\"";
+        else if(c == '\\') result += "\\\\";
+        else result += c;
+    }
+    result += "\"";
+    return result;
+    #else
+    // POSIX: wrap in single quotes, escape embedded single quotes
+    std::string result = "'";
+    for(char c : arg) {
+        if(c == '\'') result += "'\\''";
+        else result += c;
+    }
+    result += "'";
+    return result;
+    #endif
+}
+
+inline CommandResult run_command(const std::string& cmd) {
     CommandResult result;
-    std::array < char, 4096 > buf{};
+    std::array<char, 4096> buf{};
+
+    // Cap captured output at 8 MiB so a runaway command (e.g. infinite warning
+    // loop from a broken CMake invocation) doesn't OOM the server. We still
+    // read the pipe to EOF so the child can finish - only the tail of output
+    // is dropped.
+    constexpr size_t kOutputCapBytes = 8 * 1024 * 1024;
 
     struct PipeGuard {
         FILE* fp = nullptr;
@@ -46,8 +79,19 @@ inline CommandResult runCommand(const std::string& cmd) {
         return result;
     }
 
+    bool truncated = false;
     while(fgets(buf.data(), static_cast<int>(buf.size()), guard.fp) != nullptr) {
-        result.output += buf.data();
+        if(result.output.size() < kOutputCapBytes) {
+            size_t room = kOutputCapBytes - result.output.size();
+            size_t chunk = std::min(std::strlen(buf.data()), room);
+            result.output.append(buf.data(), chunk);
+            if(result.output.size() >= kOutputCapBytes && !truncated) {
+                result.output += "\n[...command output truncated at 8 MiB...]\n";
+                truncated = true;
+            }
+        }
+        // Keep draining: stopping fgets early would close the pipe and SIGPIPE
+        // the child on POSIX, sometimes hiding the real exit code.
     }
 
     // Close pipe and capture exit code

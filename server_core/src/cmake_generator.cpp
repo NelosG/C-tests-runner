@@ -1,281 +1,268 @@
 #include <algorithm>
 #include <cmake_generator.h>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
+#include <stdexcept>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
-static std::string normalizePath(std::string p) {
+namespace {
+
+std::string normalize_path(std::string p) {
     std::replace(p.begin(), p.end(), '\\', '/');
     return p;
 }
 
-CMakeGenerator::CMakeGenerator(Config config)
-    : config_(std::move(config)) {}
-
-// ============================================================================
-// Reusable building blocks
-// ============================================================================
-
-std::string CMakeGenerator::cmakeHeader(const std::string& project_name) {
-    std::ostringstream cmake;
-    cmake << "cmake_minimum_required(VERSION 3.14)\n"
-        << "project(" << project_name << " CXX)\n"
-        << "set(CMAKE_CXX_STANDARD 17)\n"
-        << "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n";
-    return cmake.str();
+std::string make_absolute(const std::string& p) {
+    if(p.empty()) return p;
+    return fs::absolute(fs::path(p)).string();
 }
 
-std::string CMakeGenerator::importedLibrary(
-    const std::string& name,
-    const std::string& lib_path,
-    const std::string& include_path
-) const {
-    std::string lib = normalizePath(lib_path);
-    std::string inc = normalizePath(include_path);
+std::string read_file(const fs::path& path) {
+    std::ifstream f(path);
+    if(!f) throw std::runtime_error(
+        "CMakeGenerator: failed to open template " + path.string()
+        + " (did the engine ship cmake/ next to the executable?)");
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
 
-    std::ostringstream cmake;
-    cmake << "add_library(" << name << " SHARED IMPORTED GLOBAL)\n"
+/// Simple @KEY@ substitution. Every key in `vars` is replaced everywhere in
+/// `text`; placeholders left unsubstituted are an error (template / code drift).
+std::string substitute(std::string text,
+                       const std::unordered_map<std::string, std::string>& vars) {
+    for(const auto& [key, value] : vars) {
+        const std::string marker = "@" + key + "@";
+        std::size_t pos = 0;
+        while((pos = text.find(marker, pos)) != std::string::npos) {
+            text.replace(pos, marker.size(), value);
+            pos += value.size();
+        }
+    }
+    // Defensive: if the template still has @SOMETHING@ left, surface it
+    // immediately rather than producing a half-rendered file that CMake
+    // would reject with a confusing error.
+    auto leftover = text.find('@');
+    if(leftover != std::string::npos) {
+        auto end = text.find('@', leftover + 1);
+        if(end != std::string::npos) {
+            std::string marker = text.substr(leftover, end - leftover + 1);
+            // Allow literal @ in URLs / paths by requiring uppercase ASCII + underscore between @s.
+            bool looks_like_placeholder = end - leftover >= 3;
+            for(std::size_t i = leftover + 1; i < end && looks_like_placeholder; ++i) {
+                char c = text[i];
+                looks_like_placeholder = (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+            }
+            if(looks_like_placeholder) {
+                throw std::runtime_error(
+                    "CMakeGenerator: unsubstituted placeholder " + marker + " in template");
+            }
+        }
+    }
+    return text;
+}
+
+/// Generate `set_target_properties(name PROPERTIES IMPORTED_LOCATION ... IMPORTED_IMPLIB ... INTERFACE_INCLUDE_DIRECTORIES ...)`
+/// block for a STATIC IMPORTED archive (used by framework runner_* libs).
+std::string static_imported(const std::string& name,
+                            const std::string& lib_path,
+                            const std::string& include_path) {
+    std::string lib = normalize_path(lib_path);
+    std::string inc = normalize_path(include_path);
+    std::ostringstream out;
+    out << "add_library(" << name << " STATIC IMPORTED GLOBAL)\n"
+        << "set_target_properties(" << name << " PROPERTIES\n"
+        << "    IMPORTED_LOCATION \"" << lib << "\"\n"
+        << "    IMPORTED_LOCATION_RELEASE \"" << lib << "\"\n"
+        << "    IMPORTED_LOCATION_DEBUG \"" << lib << "\"\n"
+        << "    INTERFACE_INCLUDE_DIRECTORIES \"" << inc << "\"\n"
+        << ")\n";
+    return out.str();
+}
+
+/// Generate the same block for a SHARED IMPORTED .dll/.so (the OpenMP variant
+/// links parallel_lib this way; on Windows the import library (.dll.a) sits
+/// next to the .dll and must be wired up explicitly).
+std::string shared_imported(const std::string& name,
+                            const std::string& lib_path,
+                            const std::string& include_path) {
+    std::string lib = normalize_path(lib_path);
+    std::string inc = normalize_path(include_path);
+    std::ostringstream out;
+    out << "add_library(" << name << " SHARED IMPORTED GLOBAL)\n"
         << "set_target_properties(" << name << " PROPERTIES\n"
         << "    IMPORTED_LOCATION \"" << lib << "\"\n";
     #ifdef _WIN32
     {
-        std::string implib = lib;
-        auto dot = implib.rfind('.');
-        if(dot != std::string::npos) implib = implib.substr(0, dot) + ".dll.a";
-        cmake << "    IMPORTED_IMPLIB \"" << implib << "\"\n";
+        fs::path lp(lib);
+        std::string implib = (lp.parent_path() / lp.stem()).string() + ".dll.a";
+        out << "    IMPORTED_IMPLIB \"" << normalize_path(implib) << "\"\n";
     }
     #endif
-    cmake << "    INTERFACE_INCLUDE_DIRECTORIES \"" << inc << "\"\n"
-        << ")\n\n";
-    return cmake.str();
+    out << "    IMPORTED_LOCATION_RELEASE \"" << lib << "\"\n"
+        << "    IMPORTED_LOCATION_DEBUG \"" << lib << "\"\n"
+        << "    INTERFACE_INCLUDE_DIRECTORIES \"" << inc << "\"\n"
+        << ")\n";
+    return out.str();
 }
 
-std::string CMakeGenerator::openmpLink(const std::string& target_name) const {
-    std::ostringstream cmake;
-    cmake << "find_package(OpenMP REQUIRED)\n"
-        << "set_property(TARGET " << target_name << " APPEND PROPERTY\n"
-        << "    INTERFACE_LINK_LIBRARIES OpenMP::OpenMP_CXX)\n\n";
-    return cmake.str();
+} // namespace
+
+// ============================================================================
+// Construction
+// ============================================================================
+
+CMakeGenerator::CMakeGenerator(Config config)
+    : config_(std::move(config)) {
+    // All paths used in generated CMake must be absolute - the wrapper runs
+    // from a fresh temp dir without context.
+    config_.engine_lib_path        = make_absolute(config_.engine_lib_path);
+    config_.engine_include_path    = make_absolute(config_.engine_include_path);
+    config_.parallel_lib_path      = make_absolute(config_.parallel_lib_path);
+    config_.parallel_include_path  = make_absolute(config_.parallel_include_path);
+    config_.runner_lib_path        = make_absolute(config_.runner_lib_path);
+    config_.runner_include_path    = make_absolute(config_.runner_include_path);
+    config_.shadow_omp_dir         = make_absolute(config_.shadow_omp_dir);
+    config_.runner_omp_lib_path    = make_absolute(config_.runner_omp_lib_path);
+    config_.runner_parlay_lib_path = make_absolute(config_.runner_parlay_lib_path);
+    config_.runner_cilk_lib_path   = make_absolute(config_.runner_cilk_lib_path);
+    config_.runner_seq_lib_path    = make_absolute(config_.runner_seq_lib_path);
+    config_.parlay_headers_path    = make_absolute(config_.parlay_headers_path);
+    config_.template_dir           = make_absolute(config_.template_dir);
 }
 
 // ============================================================================
-// Composite generators
+// runner_cmake_lists - substitute runner_wrapper.cmake.in
 // ============================================================================
 
-std::string CMakeGenerator::testWrapperCMakeLists(
-    const std::string& test_dir,
-    const std::string& student_lib_dir,
-    const std::string& student_include_dir,
-    bool force_auto_generate
+std::string CMakeGenerator::runner_cmake_lists(
+    const std::string& framework,
+    const std::string& runner_main_path,
+    const std::string& test_include_dir,
+    const std::vector<std::string>& extra_lib_dirs,
+    bool shadow_omp
 ) const {
-    std::string asgn = normalizePath(test_dir);
-    std::string sol_lib_dir = normalizePath(student_lib_dir);
-    std::string sol_inc_dir = normalizePath(student_include_dir);
+    const std::string runner_inc = normalize_path(config_.runner_include_path);
 
-    std::ostringstream cmake;
-    cmake << cmakeHeader("test_build");
+    // ---- @CILK_FLAGS_BLOCK@ ----
+    std::string cilk_flags_block;
+    if(framework == "cilk") {
+        cilk_flags_block = "add_compile_options(-fopencilk)\n"
+                           "add_link_options(-fopencilk)\n";
+    }
 
-    cmake << "# Import pre-built test_engine\n"
-        << importedLibrary(
-            "test_engine",
-            config_.engine_lib_path,
-            config_.engine_include_path
-        );
-    cmake << "# Import pre-built parallel_lib\n"
-        << importedLibrary(
-            "parallel_lib",
-            config_.parallel_lib_path,
-            config_.parallel_include_path
-        );
-    cmake << openmpLink("parallel_lib");
+    // ---- @FRAMEWORK_BLOCK@ + @RUNNER_VARIANT@ + @STUDENT_EXTRA_LINK@ ----
+    std::string framework_block;
+    std::string runner_variant;
+    std::string student_extra_link;
+    if(framework == "openmp") {
+        runner_variant = "runner_omp";
+        framework_block  = static_imported("runner_omp", config_.runner_omp_lib_path, runner_inc);
+        framework_block += "\n";
+        framework_block += shared_imported("parallel_lib",
+                                           config_.parallel_lib_path,
+                                           config_.parallel_include_path);
+        framework_block += "\nfind_package(OpenMP REQUIRED)\n";
+        if(shadow_omp) {
+            framework_block += "include_directories(BEFORE SYSTEM \""
+                            + normalize_path(config_.shadow_omp_dir) + "\")\n";
+        }
+        student_extra_link =
+            "target_link_libraries(student_solution PUBLIC parallel_lib OpenMP::OpenMP_CXX)";
+    } else if(framework == "parlay") {
+        runner_variant = "runner_parlay";
+        framework_block = static_imported("runner_parlay",
+                                          config_.runner_parlay_lib_path,
+                                          runner_inc);
+        if(!config_.parlay_headers_path.empty()) {
+            framework_block += "include_directories(\""
+                            + normalize_path(config_.parlay_headers_path) + "\")\n";
+        }
+    } else if(framework == "cilk") {
+        runner_variant  = "runner_cilk";
+        framework_block = static_imported("runner_cilk", config_.runner_cilk_lib_path, runner_inc);
+    } else if(framework == "none") {
+        runner_variant  = "runner_seq";
+        framework_block = static_imported("runner_seq", config_.runner_seq_lib_path, runner_inc);
+    } else {
+        throw std::runtime_error("CMakeGenerator: unknown framework '" + framework + "'");
+    }
 
-    // Import the real student_solution DLL
-    cmake << "# Import student_solution (real DLL)\n"
-        << "add_library(student_solution SHARED IMPORTED GLOBAL)\n";
+    // ---- @EXTRA_LIB_DIRS_BLOCK@ ----
+    std::string extra_lib_dirs_block;
+    if(!extra_lib_dirs.empty()) {
+        std::ostringstream out;
+        out << "# Teacher-bundled headers (tests/libs/<*>/)\n";
+        for(const auto& dir : extra_lib_dirs) {
+            out << "target_include_directories(runner PRIVATE \""
+                << normalize_path(dir) << "\")\n";
+        }
+        extra_lib_dirs_block = out.str();
+    }
+
+    std::unordered_map<std::string, std::string> vars{
+        {"CILK_FLAGS_BLOCK",     cilk_flags_block},
+        {"RUNNER_LIB_PATH",      normalize_path(config_.runner_lib_path)},
+        {"RUNNER_LIB_INCLUDE",   runner_inc},
+        {"FRAMEWORK_BLOCK",      framework_block},
+        {"STUDENT_EXTRA_LINK",   student_extra_link},
+        {"RUNNER_VARIANT",       runner_variant},
+        {"RUNNER_MAIN_PATH",     normalize_path(runner_main_path)},
+        {"TEST_INCLUDE_DIR",     normalize_path(test_include_dir)},
+        {"EXTRA_LIB_DIRS_BLOCK", extra_lib_dirs_block},
+    };
+
+    fs::path tpl = fs::path(config_.template_dir) / "runner_wrapper.cmake.in";
+    return substitute(read_file(tpl), vars);
+}
+
+// ============================================================================
+// test_plugin_cmake_lists - substitute test_plugin_wrapper.cmake.in
+// ============================================================================
+
+std::string CMakeGenerator::test_plugin_cmake_lists(
+    const std::string& test_dir,
+    const std::string& test_include_dir
+) const {
+    (void)test_include_dir;   // teacher's CMakeLists owns its include paths
+
+    const std::string runner_inc = normalize_path(config_.runner_include_path);
+
+    std::string implib_line;
+    std::string iface_flags_line;
+    std::string platform_global;
 
     #ifdef _WIN32
-    cmake << "file(GLOB _sol_dll \"" << sol_lib_dir << "/libstudent_solution*.dll\")\n"
-        << "file(GLOB _sol_implib \"" << sol_lib_dir << "/libstudent_solution*.dll.a\")\n"
-        << "set_target_properties(student_solution PROPERTIES\n"
-        << "    IMPORTED_LOCATION \"${_sol_dll}\"\n"
-        << "    IMPORTED_IMPLIB \"${_sol_implib}\"\n";
+    {
+        fs::path lp(config_.engine_lib_path);
+        std::string implib = (lp.parent_path() / lp.stem()).string() + ".dll.a";
+        implib_line = "IMPORTED_IMPLIB \"" + normalize_path(implib) + "\"";
+    }
+    iface_flags_line = "INTERFACE_COMPILE_DEFINITIONS \"PLUGIN_EXPORTS\"";
+    platform_global  = "set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON CACHE BOOL \"\" FORCE)";
     #else
-    cmake << "file(GLOB _sol_so \"" << sol_lib_dir << "/libstudent_solution*.so\")\n"
-        << "set_target_properties(student_solution PROPERTIES\n"
-        << "    IMPORTED_LOCATION \"${_sol_so}\"\n";
+    iface_flags_line = "INTERFACE_COMPILE_OPTIONS \"-fvisibility=default\"";
+    platform_global  = "set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL \"\" FORCE)";
     #endif
 
-    cmake << "    INTERFACE_INCLUDE_DIRECTORIES \"" << sol_inc_dir << "\"\n"
-        << ")\n\n";
+    // INTERFACE_INCLUDE_DIRECTORIES on test_engine carries both its own headers
+    // AND runner_lib's <test_data.h> - Test/TestData live across both libs.
+    std::string includes = normalize_path(config_.engine_include_path) + ";" + runner_inc;
 
-    cmake << "link_libraries(student_solution)\n\n";
+    std::unordered_map<std::string, std::string> vars{
+        {"TEST_ENGINE_LIB",             normalize_path(config_.engine_lib_path)},
+        {"TEST_ENGINE_IMPLIB_LINE",     implib_line},
+        {"TEST_ENGINE_INTERFACE_FLAGS", iface_flags_line},
+        {"TEST_ENGINE_INCLUDES",        includes},
+        {"RUNNER_LIB_PATH",             normalize_path(config_.runner_lib_path)},
+        {"RUNNER_LIB_INCLUDE",          runner_inc},
+        {"PLATFORM_GLOBAL",             platform_global},
+        {"TEACHER_TESTS_DIR",           normalize_path(test_dir)},
+    };
 
-    bool use_custom = !force_auto_generate && fs::exists(fs::path(test_dir) / "CMakeLists.txt");
-
-    if(use_custom) {
-        cmake << "# Custom test build\n"
-            << "add_subdirectory(\"" << asgn << "\" tests_build)\n"
-            << "\n# Override output dirs - force plugins into build tree\n"
-            << "get_property(_test_targets DIRECTORY \"" << asgn << "\" PROPERTY BUILDSYSTEM_TARGETS)\n"
-            << "foreach(_tgt ${_test_targets})\n"
-            << "    set_target_properties(${_tgt} PROPERTIES\n"
-            << "        LIBRARY_OUTPUT_DIRECTORY \"${CMAKE_BINARY_DIR}/plugins\"\n"
-            << "        RUNTIME_OUTPUT_DIRECTORY \"${CMAKE_BINARY_DIR}/plugins\"\n"
-            << "    )\n"
-            << "endforeach()\n";
-    } else {
-        cmake << "# Auto-generate test plugins from src\n"
-            << "file(GLOB TEST_SOURCES \"" << asgn << "/src/*.cpp\")\n"
-            << "foreach(TEST_SRC ${TEST_SOURCES})\n"
-            << "    get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)\n"
-            << "    set(PLUGIN_NAME \"plugin_${TEST_NAME}\")\n"
-            << "    add_library(${PLUGIN_NAME} SHARED ${TEST_SRC})\n"
-            << "    target_link_libraries(${PLUGIN_NAME} PUBLIC\n"
-            << "        test_engine student_solution parallel_lib OpenMP::OpenMP_CXX)\n";
-
-        #ifdef _WIN32
-        cmake << "    target_compile_definitions(${PLUGIN_NAME} PRIVATE PLUGIN_EXPORTS)\n"
-            << "    set_target_properties(${PLUGIN_NAME} PROPERTIES "
-            << "WINDOWS_EXPORT_ALL_SYMBOLS ON)\n";
-        #else
-        cmake << "    target_compile_options(${PLUGIN_NAME} PRIVATE "
-            << "-fPIC -fvisibility=default)\n";
-        #endif
-
-        cmake << "    set_target_properties(${PLUGIN_NAME} PROPERTIES PREFIX \"\")\n"
-            << "endforeach()\n";
-    }
-
-    return cmake.str();
-}
-
-std::string CMakeGenerator::solutionWrapperCMakeLists() const {
-    std::ostringstream cmake;
-    cmake << cmakeHeader("solution_build");
-
-    cmake << "include(${CMAKE_CURRENT_SOURCE_DIR}/block_network.cmake)\n\n";
-
-    cmake << "# Import parallel_lib\n"
-        << importedLibrary(
-            "parallel_lib",
-            config_.parallel_lib_path,
-            config_.parallel_include_path
-        );
-    cmake << openmpLink("parallel_lib");
-
-    cmake << "add_subdirectory(solution)\n\n"
-        << "if(TARGET student_solution)\n"
-        << "    set_target_properties(student_solution PROPERTIES POSITION_INDEPENDENT_CODE ON)\n"
-        << "    if(WIN32)\n"
-        << "        set_target_properties(student_solution PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)\n"
-        << "    endif()\n";
-
-    // Inject memory limit allocator override into student DLL
-    if (!config_.memory_inject_path.empty()) {
-        std::string inject_path = normalizePath(config_.memory_inject_path);
-        cmake << "    # Memory limit - inject allocator override into student DLL\n"
-            << "    if(EXISTS \"" << inject_path << "\")\n"
-            << "        target_sources(student_solution PRIVATE \"" << inject_path << "\")\n"
-            << "        # Wrap C allocators - redirect student malloc/free/etc to tracked versions\n"
-            << "        target_link_options(student_solution PRIVATE\n"
-            << "            -Wl,--wrap=malloc -Wl,--wrap=free\n"
-            << "            -Wl,--wrap=calloc -Wl,--wrap=realloc\n"
-            << "            -Wl,--wrap=strdup -Wl,--wrap=_strdup\n"
-            << "            -Wl,--wrap=wcsdup -Wl,--wrap=_wcsdup)\n"
-            << "        # Platform-specific allocators\n"
-            << "        if(WIN32)\n"
-            << "            target_link_options(student_solution PRIVATE\n"
-            << "                -Wl,--wrap=_aligned_malloc\n"
-            << "                -Wl,--wrap=_aligned_free\n"
-            << "                -Wl,--wrap=_aligned_realloc)\n"
-            << "        else()\n"
-            << "            target_link_options(student_solution PRIVATE\n"
-            << "                -Wl,--wrap=aligned_alloc\n"
-            << "                -Wl,--wrap=posix_memalign\n"
-            << "                -Wl,--wrap=memalign\n"
-            << "                -Wl,--wrap=valloc\n"
-            << "                -Wl,--wrap=pvalloc\n"
-            << "                -Wl,--wrap=strndup\n"
-            << "                -Wl,--wrap=reallocarray\n"
-            << "                -Wl,--wrap=asprintf\n"
-            << "                -Wl,--wrap=vasprintf\n"
-            << "                -Wl,--wrap=mmap\n"
-            << "                -Wl,--wrap=munmap\n"
-            << "                -Wl,--wrap=sbrk)\n"
-            << "        endif()\n"
-            << "    endif()\n";
-    }
-
-    cmake << "else()\n"
-        << "    message(FATAL_ERROR \"Student CMakeLists.txt must define 'student_solution' target\")\n"
-        << "endif()\n";
-
-    return cmake.str();
-}
-
-std::string CMakeGenerator::defaultSolutionCMakeLists() {
-    return
-        "file(GLOB_RECURSE SOLUTION_SOURCES\n"
-        "    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp\n"
-        "    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.h)\n"
-        "add_library(student_solution SHARED ${SOLUTION_SOURCES})\n"
-        "target_include_directories(student_solution PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)\n"
-        "target_link_libraries(student_solution PUBLIC parallel_lib)\n"
-        "if(WIN32)\n"
-        "    set_target_properties(student_solution PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)\n"
-        "endif()\n";
-}
-
-std::string CMakeGenerator::networkBlockScript() {
-    return R"cmake(
-# ============================================
-# Network blocking - prevents student code from downloading anything
-# ============================================
-
-# Block FetchContent
-set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "" FORCE)
-set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "" FORCE)
-
-# Block ExternalProject_Add if anyone tries to use it
-macro(ExternalProject_Add)
-    message(FATAL_ERROR
-        "BLOCKED: ExternalProject_Add() is not allowed. "
-        "External downloads are prohibited in student solutions.")
-endmacro()
-
-# Block FetchContent_Declare (even though FULLY_DISCONNECTED is set,
-# this provides a clear error message)
-macro(FetchContent_Declare)
-    message(FATAL_ERROR
-        "BLOCKED: FetchContent_Declare() is not allowed. "
-        "External downloads are prohibited in student solutions.")
-endmacro()
-
-# Block execute_process - prevents arbitrary command execution
-macro(execute_process)
-    message(FATAL_ERROR
-        "BLOCKED: execute_process() is not allowed. "
-        "Arbitrary command execution is prohibited in student solutions.")
-endmacro()
-
-# Block file(DOWNLOAD) and file(UPLOAD) - prevents network access
-cmake_policy(SET CMP0054 NEW)
-macro(file)
-    set(_file_args ${ARGN})
-    list(LENGTH _file_args _file_argc)
-    if(_file_argc GREATER 0)
-        list(GET _file_args 0 _file_subcmd)
-        if("${_file_subcmd}" STREQUAL "DOWNLOAD" OR "${_file_subcmd}" STREQUAL "UPLOAD")
-            message(FATAL_ERROR
-                "BLOCKED: file(${_file_subcmd}) is not allowed. "
-                "Network access is prohibited in student solutions.")
-        endif()
-    endif()
-    _file(${ARGN})
-endmacro()
-
-# Block find_package for package managers that could trigger downloads
-# (conan, vcpkg, etc). Standard system packages are allowed.
-)cmake";
+    fs::path tpl = fs::path(config_.template_dir) / "test_plugin_wrapper.cmake.in";
+    return substitute(read_file(tpl), vars);
 }

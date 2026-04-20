@@ -11,11 +11,10 @@
 
 namespace TestResultConverter {
 
-    /**
- * @brief Convert a TestResult to JSON.
- * @param testResult The result to serialize.
- * @return JSON object with name, passed, message (if non-empty), time_ms.
- */
-    nlohmann::json to_json(const TestResult& testResult);
+    /// Build the parallelStats JSON sub-object from a TestResult.
+    nlohmann::json parallel_stats_json(const TestResult& tr);
+
+    /// Build the processStats JSON sub-object from a TestResult.
+    nlohmann::json process_stats_json(const TestResult& tr);
 
 } // namespace TestResultConverter

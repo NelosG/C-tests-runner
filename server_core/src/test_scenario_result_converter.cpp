@@ -5,8 +5,7 @@
 nlohmann::json TestScenarioResultConverter::to_grouped_json(
     const std::vector<TestScenarioResult>& results,
     const std::vector<int>& thread_counts,
-    bool perf_mode,
-    int numa_node
+    bool perf_mode
 ) {
     if(results.empty() || thread_counts.empty()) {
         return nlohmann::json::array();
@@ -25,10 +24,6 @@ nlohmann::json TestScenarioResultConverter::to_grouped_json(
     for(size_t s = 0; s < num_scenarios; ++s) {
         nlohmann::json scenario;
         scenario["name"] = results[s].name;
-
-        if(numa_node >= 0) {
-            scenario["numaNode"] = numa_node;
-        }
 
         // Group individual tests: test -> runs across thread counts
         size_t num_tests = results[s].results.size();
@@ -62,7 +57,7 @@ nlohmann::json TestScenarioResultConverter::to_grouped_json(
                 double speedup = (tr.time_ms > 0.0) ? t1_ms / tr.time_ms : 0.0;
                 double efficiency = (r.threads > 0) ? speedup / r.threads : 0.0;
 
-                run["stats"] = {
+                nlohmann::json stats = {
                     {"timeMs", tr.time_ms},
                     {"workMs", work_ms},
                     {"spanMs", span_ms},
@@ -71,34 +66,31 @@ nlohmann::json TestScenarioResultConverter::to_grouped_json(
                     {"efficiency", efficiency}
                 };
 
-                // Parallel stats sub-object: construct usage
-                run["parallelStats"] = {
-                    {"parallelRegions", tr.parallel_regions},
-                    {"tasksCreated", tr.tasks_created},
-                    {"maxThreadsUsed", tr.max_threads_used},
-                    {"singleRegions", tr.single_regions},
-                    {"taskwaits", tr.taskwaits},
-                    {"barriers", tr.barriers},
-                    {"criticals", tr.criticals},
-                    {"forLoops", tr.for_loops},
-                    {"atomics", tr.atomics},
-                    {"sections", tr.sections},
-                    {"masters", tr.masters},
-                    {"ordered", tr.ordered},
-                    {"taskgroups", tr.taskgroups},
-                    {"simdConstructs", tr.simd_constructs},
-                    {"cancels", tr.cancels},
-                    {"flushes", tr.flushes},
-                    {"taskyields", tr.taskyields}
-                };
+                // Compute efficiency: work / (time * threads) - fraction of CPU doing useful work
+                if(tr.time_ms > 0.0 && r.threads > 0) {
+                    stats["computeEfficiency"] = static_cast<double>(tr.work_ns)
+                        / (tr.time_ms * 1e6 * r.threads);
+                }
 
-                // Memory stats sub-object: allocation tracking
-                run["memoryStats"] = {
-                    {"peakMemoryBytes", tr.peak_memory_bytes},
-                    {"allocations", tr.allocation_count},
-                    {"deallocations", tr.deallocation_count},
-                    {"limitExceeded", tr.memory_limit_exceeded}
-                };
+                // Task granularity
+                if(tr.tasks_created > 0) {
+                    stats["avgTaskWorkMs"] = work_ms / tr.tasks_created;
+                }
+
+                // Load balance - only for task-based parallelism where span is accurate
+                if(tr.span_ns > 0 && tr.max_threads_used > 1 && tr.tasks_created > 0) {
+                    stats["loadBalanceRatio"] = static_cast<double>(tr.work_ns)
+                        / (static_cast<double>(tr.span_ns) * tr.max_threads_used);
+                }
+
+                run["stats"] = stats;
+
+                run["parallelStats"] = TestResultConverter::parallel_stats_json(tr);
+                run["processStats"] = TestResultConverter::process_stats_json(tr);
+
+                if(!tr.stderr_output.empty()) {
+                    run["stderrOutput"] = tr.stderr_output;
+                }
 
                 runs.push_back(run);
             }
@@ -131,21 +123,3 @@ nlohmann::json TestScenarioResultConverter::to_grouped_json(
     return scenarios_json;
 }
 
-nlohmann::json TestScenarioResultConverter::to_json(const TestScenarioResult& testScenarioResult) {
-    nlohmann::json json;
-
-    json["name"] = testScenarioResult.name;
-    json["threads"] = testScenarioResult.threads;
-
-    auto tests = nlohmann::json::array();
-    for(const auto& test : testScenarioResult.results) {
-        tests.push_back(TestResultConverter::to_json(test));
-    }
-    json["tests"] = tests;
-
-    if(testScenarioResult.numa_node >= 0) {
-        json["numaNode"] = testScenarioResult.numa_node;
-    }
-
-    return json;
-}

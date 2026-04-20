@@ -9,7 +9,7 @@
 #include <ctime>
 #include <string>
 
-inline std::string nowISO8601() {
+inline std::string now_iso8601() {
     const auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
     std::tm tm{};

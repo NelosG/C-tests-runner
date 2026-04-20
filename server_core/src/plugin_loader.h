@@ -3,21 +3,19 @@
 /**
  * @file plugin_loader.h
  * @brief Cross-platform dynamic library loader for test plugins.
+ *
+ * Loads .dll (Windows) / .so (Linux) files via LoadLibraryA / dlopen, triggering
+ * static REGISTER_TEST() initializers that populate the active TestRegistry.
+ *
+ * unload_all() does NOT clear the registry - that's the caller's responsibility,
+ * because the registry holds objects whose vtables live in the loaded DLLs and
+ * must be destroyed BEFORE the library handles are closed.
  */
 
 #include <string>
+#include <utility>
 #include <vector>
 
-/**
- * @brief Loads and manages dynamically linked test plugin libraries.
- *
- * Scans a directory for .dll (Windows) or .so (Linux) files, loads each one
- * via LoadLibraryA / dlopen, triggering static REGISTER_TEST() initializers
- * that populate the global TestRegistry.
- *
- * @note unloadAll() clears the TestRegistry before closing library handles
- *       to prevent dangling vtable pointers.
- */
 class PluginLoader {
     public:
         PluginLoader() = default;
@@ -29,36 +27,13 @@ class PluginLoader {
         PluginLoader(PluginLoader&&) noexcept;
         PluginLoader& operator=(PluginLoader&&) noexcept;
 
-        /**
-     * @brief Load all plugins from a directory.
-     * @param directory Path to the directory containing .dll/.so files.
-     * @return Number of successfully loaded plugins.
-     */
-        size_t loadPluginsFromDirectory(const std::string& directory);
+        /// Load a single plugin by file path. Returns true on success.
+        bool load_plugin(const std::string& plugin_path);
 
-        /**
-     * @brief Load a single plugin by file path.
-     * @param plugin_path Full path to the .dll/.so file.
-     * @return True if the plugin was loaded successfully.
-     */
-        bool loadPlugin(const std::string& plugin_path);
-
-        /**
-     * @brief Get paths of all currently loaded plugins.
-     * @return Vector of file paths.
-     */
-        std::vector<std::string> getLoadedPlugins() const;
-
-        /**
-     * @brief Unload all plugins safely.
-     *
-     * First clears TestRegistry (destroying test objects whose vtables live
-     * in the plugin), then closes all library handles.
-     */
-        void unloadAll();
+        /// Close all loaded library handles. Caller MUST clear any registry that
+        /// holds objects from these DLLs first.
+        void unload_all();
 
     private:
         std::vector<std::pair<std::string, void*>> plugin_handles_;
-
-        std::vector<std::string> findPluginFiles(const std::string& directory);
 };

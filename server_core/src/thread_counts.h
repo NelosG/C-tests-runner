@@ -20,7 +20,8 @@ namespace ThreadCounts {
  */
     inline std::vector<int> get(const std::string& mode, int max_threads) {
         if(mode == to_string(test_mode::performance)) {
-            return {1, max_threads};
+            if(max_threads > 1) return {1, max_threads};
+            return {1};
         }
         // "correctness" or "all"
         std::vector<int> counts = {1};
