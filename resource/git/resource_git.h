@@ -16,8 +16,14 @@
  * }
  *
  * Descriptor: { "url": "...", "branch": "...", "token": "...", "_kind"?: "..." }
- * Auth: token is injected into the URL as https://oauth2:{token}@{rest} at clone/fetch time.
- * Token is NEVER written to disk (cache_meta.json stores only url + branch + last_pull_at).
+ * Auth: token is injected into the URL as `oauth2:<token>@host` (GitLab git-smart-http
+ * requires Basic Auth, not Bearer headers) and passed to git via
+ * `-c url.<auth>.insteadOf=<plain>` for the lifetime of a single invocation.
+ * `.git/config` only ever stores the plain (token-less) URL - the token never
+ * touches the disk. cache_meta.json stores only `url` (without token) + `branch`
+ * + `last_pull_at`.
+ * Auth failures surface as plain errors because `GIT_TERMINAL_PROMPT=0` is set in
+ * the parent process during `start()` - git children inherit it via popen.
  */
 
 #include <atomic>
@@ -39,42 +45,52 @@ class GitResourceProvider : public ResourceProvider {
         /// Descriptor: { url, branch?, token?, _kind? }
         std::filesystem::path resolve(const nlohmann::json& descriptor) override;
 
-        bool validateConfig(const nlohmann::json& config, std::string& error) override;
+        bool validate_config(const nlohmann::json& config, std::string& error) override;
 
         void start() override;
         void stop() override;
 
     private:
         /// Compute a deterministic, human-readable cache directory name.
-        static std::string makeCacheKey(const std::string& url, const std::string& branch);
+        static std::string make_cache_key(const std::string& url, const std::string& branch);
 
-        /// Inject token into URL: https://oauth2:{token}@{rest-of-url}
-        static std::string injectToken(const std::string& url, const std::string& token);
-
-        /// Clone repository to dest. Returns true on success.
-        bool cloneRepo(
-            const std::string& auth_url,
+        /// Clone repository to dest. The plain URL is what gets written to
+        /// `.git/config`; the auth URL with `oauth2:<token>` is supplied
+        /// per-invocation via `-c url.<auth>.insteadOf=<plain>`. Returns
+        /// true on success.
+        bool clone_repo(
+            const std::string& url,
             const std::string& branch,
+            const std::string& token,
             const std::filesystem::path& dest
         ) const;
 
-        /// Fetch latest commit in existing clone. Returns true on success.
-        bool fetchRepo(
-            const std::string& auth_url,
+        /// Fetch latest commit in existing clone. Same `-c insteadOf` trick
+        /// as clone_repo - `.git/config` is never modified by this call.
+        /// Returns true on success.
+        bool fetch_repo(
+            const std::string& url,
             const std::string& branch,
+            const std::string& token,
             const std::filesystem::path& dest
         ) const;
 
         /// Write .cache_meta.json (no token stored).
-        static void writeCacheMeta(
+        static void write_cache_meta(
             const std::filesystem::path& dir,
             const std::string& url,
             const std::string& branch
         );
 
         /// Background cleanup loop.
-        void cleanupLoop();
+        void cleanup_loop();
 
+        // The three config fields below are read by the background cleanup
+        // thread without synchronisation. They are written ONLY by the
+        // constructor (before start()), and must not be mutated while the
+        // provider is running. ResourceProvider has no live-config update
+        // hook today; if one is ever added, these need to become atomic or
+        // be guarded by a dedicated mutex.
         std::string cache_dir_;
         int cache_ttl_seconds_ = 604800; // 7 days
         int cleanup_interval_sec_ = 3600;   // 1 hour
@@ -84,5 +100,5 @@ class GitResourceProvider : public ResourceProvider {
 
         std::thread cleanup_thread_;
         std::atomic<bool> stop_{false};
-        bool started_{false};
+        std::atomic<bool> started_{false};
 };

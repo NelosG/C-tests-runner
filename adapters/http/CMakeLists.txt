@@ -31,7 +31,7 @@ target_compile_definitions(http_adapter PRIVATE ADAPTER_EXPORTS)
 
 # Output to adapters/ subdirectory next to the executable
 set_target_properties(http_adapter PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/adapters
-        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/adapters
+        RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_DIR}/adapters
+        LIBRARY_OUTPUT_DIRECTORY ${OUTPUT_DIR}/adapters
         PREFIX ""
 )

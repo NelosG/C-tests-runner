@@ -20,7 +20,6 @@ struct TestScenarioResult {
     std::string name;
     std::vector<TestResult> results;
     int threads = 1;
-    int numa_node = -1;
 
     TestScenarioResult(std::string name, std::vector<TestResult> results, int threads = 1)
         : name(std::move(name)),

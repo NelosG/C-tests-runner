@@ -22,7 +22,7 @@
 class TestExecutionAdapter : public TransportAdapter {
     public:
         /// Generate a unique random job ID (e.g. "j-a3f7b2c1").
-        static std::string generateJobId() {
+        static std::string generate_job_id() {
             std::uniform_int_distribution<uint32_t> dist;
             std::ostringstream ss;
             ss << "j-" << std::hex << dist(rng());
@@ -30,7 +30,7 @@ class TestExecutionAdapter : public TransportAdapter {
         }
 
         /// Generate a bearer auth token: "tok-<32 hex digits>" (128-bit entropy).
-        static std::string generateAuthToken() {
+        static std::string generate_auth_token() {
             std::uniform_int_distribution<uint32_t> dist;
             std::ostringstream ss;
             ss << "tok-" << std::hex
@@ -40,7 +40,7 @@ class TestExecutionAdapter : public TransportAdapter {
         }
 
         /// Generate a unique node ID: "{hostname}-{random_hex}".
-        static std::string generateNodeId() {
+        static std::string generate_node_id() {
             #ifdef _WIN32
             char hostname[256] = {};
             DWORD size = sizeof(hostname);

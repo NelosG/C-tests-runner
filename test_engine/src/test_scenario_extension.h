@@ -7,8 +7,6 @@
 
 #include <string>
 #include <test.h>
-#include <test_result.h>
-#include <test_scenario_result.h>
 
 /**
  * @brief Type of test scenario - determines when it runs.
@@ -21,7 +19,7 @@ enum class ScenarioType {
 /**
  * @brief Abstract base that every test plugin must extend.
  *
- * Subclasses implement getTests(), name(), and optionally scenario_type()
+ * Subclasses implement get_tests(), name(), and optionally scenario_type()
  * to declare whether the scenario is for correctness or performance testing.
  *
  * The engine filters scenarios by type and only runs matching ones.
@@ -31,7 +29,7 @@ class TestScenarioExtension {
     public:
         virtual ~TestScenarioExtension() = default;
 
-        virtual std::vector<Test> getTests() const = 0;
+        virtual std::vector<Test> get_tests() const = 0;
 
         virtual std::string name() const = 0;
 
@@ -46,7 +44,4 @@ class TestScenarioExtension {
      */
         virtual ScenarioType scenario_type() const { return ScenarioType::CORRECTNESS; }
 
-        TestScenarioResult run() const;
-
-        static TestResult runTest(const Test& test);
 };

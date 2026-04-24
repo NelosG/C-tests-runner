@@ -10,8 +10,10 @@ if(UNIX)
 endif()
 
 # Plugin output directory
-set(PLUGIN_OUTPUT_DIR ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/plugins)
+set(PLUGIN_OUTPUT_DIR ${OUTPUT_DIR}/plugins)
 file(MAKE_DIRECTORY ${PLUGIN_OUTPUT_DIR})
+
+include_directories(include)
 
 # ============================================
 # Helper function to add a plugin target
@@ -20,7 +22,6 @@ function(add_plugin PLUGIN_NAME)
     add_library(${PLUGIN_NAME} SHARED ${ARGN})
     target_link_libraries(${PLUGIN_NAME}
             PUBLIC test_engine
-            PUBLIC student_solution
     )
     set_target_properties(${PLUGIN_NAME} PROPERTIES
             LIBRARY_OUTPUT_DIRECTORY ${PLUGIN_OUTPUT_DIR}
@@ -30,10 +31,9 @@ function(add_plugin PLUGIN_NAME)
 endfunction()
 
 # ============================================
-# Plugins
+# Plugins (new 2-phase API: setup writes files, verify reads files)
 # ============================================
 add_plugin(plugin_correctness src/test_correctness.cpp)
 add_plugin(plugin_edge_cases src/test_edge_cases.cpp)
 add_plugin(plugin_stability_scalability src/test_stability.cpp src/test_scalability.cpp)
 add_plugin(plugin_parallel_verify src/test_parallel_verify.cpp)
-target_link_libraries(plugin_parallel_verify PUBLIC parallel_lib)

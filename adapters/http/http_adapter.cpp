@@ -2,12 +2,19 @@
 #include <http_adapter.h>
 #include <adapter_status.h>
 #include <adapter_utils.h>
+#include <algorithm>
 #include <api_types.h>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <register_adapter.h>
 #include <time_utils.h>
+
+/// Forward declaration: definition lives further down (used by start() and
+/// progress_worker_loop() which appear before it in source order).
+static void parse_url(const std::string& raw, std::string& scheme,
+                      std::string& host_port, std::string& path);
 
 // ============================================================================
 // HttpAdapter
@@ -37,7 +44,7 @@ HttpAdapter::HttpAdapter(TestRunnerService& runner, const ManagementAPI* managem
 
     config_.node_id = ctx.node_id;
     config_.adapter_name = ctx.adapter_name;
-    auth_token_ = generateAuthToken();
+    auth_token_ = generate_auth_token();
 
     // Prevent multiple processes from binding to the same port.
     // Default SO_REUSEADDR on Windows allows port sharing silently.
@@ -79,8 +86,8 @@ HttpAdapter::HttpAdapter(TestRunnerService& runner, const ManagementAPI* managem
         }
     );
 
-    setupTestRoutes();
-    setupManagementRoutes();
+    setup_test_routes();
+    setup_management_routes();
 }
 
 HttpAdapter::~HttpAdapter() {
@@ -91,99 +98,19 @@ HttpAdapter::~HttpAdapter() {
     } catch(...) {}
 }
 
-void HttpAdapter::setupTestRoutes() {
+void HttpAdapter::setup_test_routes() {
     svr_.Post(
         "/api/run",
         [this](const httplib::Request& req, httplib::Response& res) {
             try {
                 auto json = nlohmann::json::parse(req.body);
 
-                const bool has_solution = json.contains("solutionSource") && json.contains("solutionSourceType");
-                const bool has_tests = json.contains("testSource") && json.contains("testSourceType");
-                if(!has_solution || !has_tests) {
+                // Shared validation (sources, testId, jobId, threads, memoryLimitMb, wallTimeSec, cpuTimeSec, maxProcesses)
+                auto [valid, err] = adapter_utils::validate_run_request(json);
+                if(!valid) {
                     res.status = 400;
-                    res.set_content(
-                        nlohmann::json{
-                            {
-                                "error",
-                                "Missing required: solutionSourceType + solutionSource and testSourceType + testSource"
-                            }
-                        }.dump(),
-                        "application/json"
-                    );
+                    res.set_content(nlohmann::json{{"error", err}}.dump(), "application/json");
                     return;
-                }
-
-                // Validate testId
-                if(!json.contains("testId") || json["testId"].get<std::string>().empty()) {
-                    res.status = 400;
-                    res.set_content(
-                        nlohmann::json{{"error", "Missing required field: testId"}}.dump(),
-                        "application/json"
-                    );
-                    return;
-                }
-
-                // Validate mode
-                std::string mode_str = json.value("mode", to_string(test_mode::correctness));
-                if(!is_valid_test_mode(mode_str)) {
-                    res.status = 400;
-                    res.set_content(
-                        nlohmann::json{
-                            {
-                                "error",
-                                "Invalid mode: '" + mode_str + "'. Must be 'correctness', 'performance', or 'all'"
-                            }
-                        }.dump(),
-                        "application/json"
-                    );
-                    return;
-                }
-
-                // Validate threads
-                if(json.contains("threads")) {
-                    int threads = json["threads"].get<int>();
-                    int max_hw = static_cast<int>(std::thread::hardware_concurrency()) * 2;
-                    if(threads < 1 || threads > max_hw) {
-                        res.status = 400;
-                        res.set_content(
-                            nlohmann::json{
-                                {
-                                    "error",
-                                    "Invalid threads: " + std::to_string(threads)
-                                    + ". Must be 1.." + std::to_string(max_hw)
-                                }
-                            }.dump(),
-                            "application/json"
-                        );
-                        return;
-                    }
-                }
-
-                // Validate numaNode
-                if(json.contains("numaNode")) {
-                    int numa = json["numaNode"].get<int>();
-                    if(numa < -1) {
-                        res.status = 400;
-                        res.set_content(
-                            nlohmann::json{{"error", "Invalid numaNode: must be >= -1"}}.dump(),
-                            "application/json"
-                        );
-                        return;
-                    }
-                }
-
-                // Validate memoryLimitMb (if provided)
-                if(json.contains("memoryLimitMb")) {
-                    auto& v = json["memoryLimitMb"];
-                    if(!v.is_number_integer() || v.get<long long>() < 0) {
-                        res.status = 400;
-                        res.set_content(
-                            nlohmann::json{{"error", "memoryLimitMb must be non-negative integer"}}.dump(),
-                            "application/json"
-                        );
-                        return;
-                    }
                 }
 
                 // Validate callbackUrl format (if provided)
@@ -230,13 +157,13 @@ void HttpAdapter::setupTestRoutes() {
                         std::chrono::steady_clock::now() - start_time
                     ).count();
                     std::string job_id = result.value("jobId", "");
-                    auto msg = adapter_utils::buildCompletionResult(result, job_id, node_id, duration);
+                    auto msg = adapter_utils::build_completion_result(result, job_id, node_id, duration);
 
                     if(callback_url.empty()) return;
                     try {
                         const size_t scheme_end = callback_url.find("://");
                         if(scheme_end == std::string::npos)
-                            throw std::runtime_error("Invalid callback URL: " + callback_url);
+                            throw std::runtime_error("Invalid callback URL: missing scheme");
                         const size_t path_start = callback_url.find('/', scheme_end + 3);
                         const std::string host_port = (path_start != std::string::npos)
                             ? callback_url.substr(0, path_start)
@@ -250,14 +177,17 @@ void HttpAdapter::setupTestRoutes() {
                         if(!api_key.empty())
                             cli.set_default_headers({{"X-API-Key", api_key}});
                         auto r = cli.Put(path, msg.dump(), "application/json");
+                        // Use job_id (non-sensitive) for correlation instead of the
+                        // path, which can contain webhook-secret-like tokens.
                         if(!r)
-                            std::cerr << "[HTTP] Callback PUT " << path << " failed: "
-                                << httplib::to_string(r.error()) << "\n";
+                            std::cerr << "[HTTP] Callback PUT failed for job " << job_id
+                                << ": " << httplib::to_string(r.error()) << "\n";
                         else if(r->status >= 400)
-                            std::cerr << "[HTTP] Callback PUT " << path << " returned HTTP "
-                                << r->status << "\n";
+                            std::cerr << "[HTTP] Callback PUT for job " << job_id
+                                << " returned HTTP " << r->status << "\n";
                     } catch(const std::exception& e) {
-                        std::cerr << "[HTTP] Callback failed: " << e.what() << "\n";
+                        std::cerr << "[HTTP] Callback failed for job " << job_id
+                            << ": " << e.what() << "\n";
                     }
                 };
 
@@ -271,8 +201,36 @@ void HttpAdapter::setupTestRoutes() {
                 }
                 long long memory_limit_mb = json.value("memoryLimitMb", runner_.default_memory_limit_mb());
 
-                auto job_id = runner_.submit(std::move(json), std::move(on_complete));
-                auto info = runner_.getJobInfo(job_id);
+                // Inject node_id so pipeline tags progress events with this runner.
+                json["_node_id"] = config_.node_id;
+
+                // Pre-extract jobId for the "received" progress event (fall through
+                // to runner-generated id if absent - same logic as JobQueue).
+                std::string client_job_id = json.value("jobId", "");
+                if(!client_job_id.empty()) {
+                    enqueue_progress({
+                        {"jobId",     client_job_id},
+                        {"nodeId",    config_.node_id},
+                        {"phase",     "received"},
+                        {"timestamp", now_iso8601()}
+                    });
+                }
+
+                auto on_progress = [this](const nlohmann::json& event) {
+                    enqueue_progress(event);
+                };
+
+                auto job_id = runner_.submit(std::move(json), std::move(on_complete), std::move(on_progress));
+                // If the client did not supply jobId, the runner generated one - emit "received" now.
+                if(client_job_id.empty()) {
+                    enqueue_progress({
+                        {"jobId",     job_id},
+                        {"nodeId",    config_.node_id},
+                        {"phase",     "received"},
+                        {"timestamp", now_iso8601()}
+                    });
+                }
+                auto info = runner_.get_job_info(job_id);
 
                 std::cout << "[HTTP] POST /api/run -> job " << job_id
                     << " (pos=" << info.queue_position << ")\n";
@@ -283,10 +241,9 @@ void HttpAdapter::setupTestRoutes() {
                         {"status", to_string(job_status::queued)},
                         {"nodeId", config_.node_id},
                         {"position", info.queue_position},
-                        {"mode", mode_str},
                         {"solution", solution_name},
                         {"memoryLimitMb", memory_limit_mb},
-                        {"timestamp", nowISO8601()}
+                        {"timestamp", now_iso8601()}
                     }.dump(),
                     "application/json"
                 );
@@ -303,7 +260,7 @@ void HttpAdapter::setupTestRoutes() {
     svr_.Get(
         "/api/status",
         [this](const httplib::Request&, httplib::Response& res) {
-            res.set_content(runner_.getQueueStatus().dump(), "application/json");
+            res.set_content(runner_.get_queue_status().dump(), "application/json");
         }
     );
 
@@ -311,8 +268,8 @@ void HttpAdapter::setupTestRoutes() {
         R"(/api/jobs/([a-zA-Z0-9_-]+))",
         [this](const httplib::Request& req, httplib::Response& res) {
             try {
-                auto info = runner_.getJobInfo(req.matches[1]);
-                res.set_content(adapter_utils::buildJobInfoJson(info).dump(), "application/json");
+                auto info = runner_.get_job_info(req.matches[1]);
+                res.set_content(adapter_utils::build_job_info_json(info).dump(), "application/json");
             } catch(const std::exception& e) {
                 res.status = 404;
                 res.set_content(
@@ -360,18 +317,31 @@ void HttpAdapter::setupTestRoutes() {
     svr_.Get(
         "/api/node/status",
         [this](const httplib::Request&, httplib::Response& res) {
-            auto status = adapter_utils::buildNodeEvent(node_event_type::info, config_.node_id, runner_, management_);
+            auto status = adapter_utils::build_node_event(node_event_type::info, config_.node_id, runner_, management_);
             res.set_content(status.dump(), "application/json");
         }
     );
 
-    // PUT /api/config - dynamically update engine configuration
+    // PUT /api/config - dynamically update engine configuration.
+    // Canonical request shape: { "config": { <ConfigUpdateRequest> } }
     svr_.Put(
         "/api/config",
         [this](const httplib::Request& req, httplib::Response& res) {
             try {
                 auto json = nlohmann::json::parse(req.body);
-                auto [ok, err] = adapter_utils::applyConfig(runner_, json);
+                auto cfg = json.value("config", nlohmann::json::object());
+                if(!cfg.is_object() || cfg.empty()) {
+                    res.status = 400;
+                    res.set_content(
+                        nlohmann::json{
+                            {"status", to_string(response_status::error)},
+                            {"error", "Missing or empty 'config' object"}
+                        }.dump(),
+                        "application/json"
+                    );
+                    return;
+                }
+                auto [ok, err] = adapter_utils::apply_config(runner_, cfg);
                 if(!ok) {
                     res.status = 400;
                     res.set_content(
@@ -383,8 +353,8 @@ void HttpAdapter::setupTestRoutes() {
                     );
                     return;
                 }
-                std::cout << "[HTTP] PUT /api/config: " << json.dump() << "\n";
-                res.set_content(runner_.getQueueStatus().dump(), "application/json");
+                std::cout << "[HTTP] PUT /api/config: " << cfg.dump() << "\n";
+                res.set_content(runner_.get_queue_status().dump(), "application/json");
             } catch(const std::exception& e) {
                 res.status = 400;
                 res.set_content(
@@ -399,7 +369,7 @@ void HttpAdapter::setupTestRoutes() {
     );
 }
 
-void HttpAdapter::setupManagementRoutes() {
+void HttpAdapter::setup_management_routes() {
     if(!management_) {
         std::cout << "[HTTP] Management API not provided, skipping management routes\n";
         return;
@@ -428,7 +398,7 @@ void HttpAdapter::setupManagementRoutes() {
     svr_.Get(
         "/api/adapters/available",
         [this](const httplib::Request&, httplib::Response& res) {
-            auto available = adapter_utils::filterAvailableAdapters(management_);
+            auto available = adapter_utils::filter_available_adapters(management_);
             res.set_content(
                 nlohmann::json{{"adapters", available}}.dump(),
                 "application/json"
@@ -629,10 +599,24 @@ void HttpAdapter::start() {
         );
     }
 
+    // Derive progress endpoint from register_url (scheme://host:port + /api/callback/progress).
+    // If register_url is empty (orchestrator integration disabled), progress thread stays idle.
+    if(!config_.register_url.empty()) {
+        std::string scheme, host_port, _path;
+        parse_url(config_.register_url, scheme, host_port, _path);
+        progress_url_ = scheme + "://" + host_port + "/api/callback/progress";
+        progress_thread_ = std::thread([this]() { progress_worker_loop(); });
+        // Do not log progress_url_ - it inherits user-info from register_url.
+        std::cout << "[HTTP] Progress publisher started\n";
+    }
+
     server_thread_ = std::thread(
         [this]() {
-            std::cout << "[HTTP] Auth token: ..."
-                << auth_token_.substr(auth_token_.size() - std::min<size_t>(8, auth_token_.size())) << "\n";
+            // Do not log any part of auth_token_ - even a tail can help an
+            // attacker who got partial visibility (and the token is generated
+            // from a 32-bit-seeded PRNG, so any leaked bytes accelerate state
+            // recovery). Operators can read the token from the management
+            // config snapshot if they need to verify deployment.
             std::cout << "[HTTP] Starting on 0.0.0.0:" << config_.port << "\n";
             if(!svr_.listen("0.0.0.0", config_.port)) {
                 std::cerr << "[HTTP] Failed to bind to port " << config_.port
@@ -661,14 +645,14 @@ void HttpAdapter::start() {
 
 }
 
-void HttpAdapter::notifyOnline() {
+void HttpAdapter::notify_online() {
     if(config_.register_url.empty()) return;
 
     if(config_.api_key.empty()) {
         stop();
         throw std::runtime_error("[HTTP] apiKey is required for orchestrator registration (set in http.json)");
     }
-    if(!doRegister()) {
+    if(!do_register()) {
         stop();
         throw std::runtime_error("[HTTP] Registration with orchestrator failed");
     }
@@ -677,10 +661,147 @@ void HttpAdapter::notifyOnline() {
 void HttpAdapter::stop() {
     if(stop_.exchange(true)) return;
     alive_->store(false);
-    doDeregister();
+    do_deregister();
     svr_.stop();
     if(server_thread_.joinable()) {
         server_thread_.join();
+    }
+
+    // Stop progress publisher. The worker is bounded by HTTP timeouts in
+    // make_client() (5s connect + 5s read = 10s max for the in-flight POST),
+    // after which it sees progress_stop_ and exits. A naive joinable()-spin
+    // loop here would never see joinable() flip to false on its own - only
+    // join()/detach() change it - so this needs an actual timed-join via
+    // promise/future from the worker side.
+    if(progress_thread_.joinable()) {
+        progress_stop_ = true;
+        progress_cv_.notify_all();
+        progress_thread_.join();
+    }
+}
+
+// ============================================================================
+// Progress publisher (separate thread, bounded queue, drop-oldest on overflow)
+// ============================================================================
+
+void HttpAdapter::enqueue_progress(nlohmann::json event) {
+    // Skip if progress endpoint isn't wired (no register_url).
+    if(progress_url_.empty()) return;
+    {
+        std::lock_guard lock(progress_mutex_);
+        if(progress_queue_.size() >= kProgressQueueMax) {
+            progress_queue_.pop_front();  // drop oldest
+            progress_dropped_queue_.fetch_add(1, std::memory_order_relaxed);
+            std::cerr << "[HTTP] progress queue full - dropped oldest event\n";
+        }
+        progress_queue_.push_back(std::move(event));
+    }
+    progress_cv_.notify_one();
+}
+
+void HttpAdapter::progress_worker_loop() {
+    if(progress_url_.empty()) return;
+
+    // Parse the progress URL once.
+    std::string scheme, host_port, path;
+    parse_url(progress_url_, scheme, host_port, path);
+
+    // Factory: build a fresh keep-alive client. Used both initially and to
+    // recover from a stale connection (orchestrator-side keep-alive timeout
+    // closes the socket while we're idle between bursts; the next write goes
+    // to a dead socket and Post() returns Error::Read).
+    auto make_client = [&]() {
+        auto c = std::make_unique<httplib::Client>(scheme + "://" + host_port);
+        c->set_connection_timeout(5);
+        c->set_read_timeout(5);
+        if(!config_.api_key.empty())
+            c->set_default_headers({{"X-API-Key", config_.api_key}});
+        return c;
+    };
+
+    auto client = make_client();
+    auto period_start = std::chrono::steady_clock::now();
+    uint64_t period_published = 0;
+    uint64_t period_dropped   = 0;
+
+    auto log_period_stats = [&](bool force) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - period_start).count();
+        // Throttle: every 60s with activity, or on shutdown ("force").
+        bool active = period_published > 0 || period_dropped > 0;
+        if(!force && !(active && elapsed >= 60)) return;
+        if(active) {
+            uint64_t total = period_published + period_dropped;
+            double drop_pct = total ? (100.0 * period_dropped / total) : 0.0;
+            std::cout << "[HTTP] progress stats (last " << elapsed << "s): "
+                << period_published << " ok, " << period_dropped << " dropped on send ("
+                << drop_pct << "%)\n";
+        }
+        period_published = 0;
+        period_dropped   = 0;
+        period_start     = now;
+    };
+
+    while(true) {
+        nlohmann::json event;
+        {
+            std::unique_lock lock(progress_mutex_);
+            progress_cv_.wait_for(lock, std::chrono::seconds(5), [this]() {
+                return progress_stop_.load() || !progress_queue_.empty();
+            });
+            if(progress_stop_.load() && progress_queue_.empty()) {
+                log_period_stats(true);
+                uint64_t pub = progress_published_.load(std::memory_order_relaxed);
+                uint64_t snd = progress_dropped_send_.load(std::memory_order_relaxed);
+                uint64_t que = progress_dropped_queue_.load(std::memory_order_relaxed);
+                std::cout << "[HTTP] progress publisher exiting. Totals: "
+                    << pub << " published, " << snd << " dropped on send, "
+                    << que << " dropped by queue overflow\n";
+                return;
+            }
+            if(progress_queue_.empty()) {
+                // Spurious wakeup or 5s tick with no events - flush stats if due.
+                log_period_stats(false);
+                continue;
+            }
+            event = std::move(progress_queue_.front());
+            progress_queue_.pop_front();
+        }
+
+        bool delivered = false;
+        try {
+            auto body = event.dump();
+            auto res = client->Post(path, body, "application/json");
+            // Read-error usually means stale keep-alive: write succeeded into
+            // the kernel buffer, but the orchestrator had already closed the
+            // socket so the read of the response got EOF/RST. Recreate the
+            // client and retry once. Other errors (connection refused, etc.)
+            // are non-transient at this layer and we drop.
+            if(!res && res.error() == httplib::Error::Read) {
+                client = make_client();
+                res = client->Post(path, body, "application/json");
+            }
+            if(!res) {
+                std::cerr << "[HTTP] progress POST failed: "
+                    << httplib::to_string(res.error()) << " (event dropped)\n";
+            } else if(res->status >= 400) {
+                std::cerr << "[HTTP] progress POST returned HTTP " << res->status
+                    << " (event dropped)\n";
+            } else {
+                delivered = true;
+            }
+        } catch(const std::exception& e) {
+            std::cerr << "[HTTP] progress POST threw: " << e.what() << "\n";
+        }
+
+        if(delivered) {
+            progress_published_.fetch_add(1, std::memory_order_relaxed);
+            ++period_published;
+        } else {
+            progress_dropped_send_.fetch_add(1, std::memory_order_relaxed);
+            ++period_dropped;
+        }
+        log_period_stats(false);
     }
 }
 
@@ -688,8 +809,9 @@ void HttpAdapter::stop() {
 // Registration / deregistration via HTTP POST
 // ============================================================================
 
-/// Parse "scheme://host:port/path" into components.
-static void parseUrl(
+/// Parse "scheme://host:port/path" into components. Defined here, but used
+/// earlier in start()/progress_worker_loop() - forward-declared at top of file.
+static void parse_url(
     const std::string& raw,
     std::string& scheme,
     std::string& host_port,
@@ -713,16 +835,18 @@ static void parseUrl(
     }
 }
 
-bool HttpAdapter::doRegister() {
+bool HttpAdapter::do_register() {
     if(config_.register_url.empty()) return true;
 
-    std::cout << "[HTTP] Attempting registration via POST " << config_.register_url
+    // Do not log register_url - it can carry user-info if the operator put
+    // credentials in the URL. The operator can read it from http.json directly.
+    std::cout << "[HTTP] Attempting registration via POST"
         << " (timeout: " << config_.registration_timeout_sec << "s)...\n";
 
     std::string scheme, host_port, path;
-    parseUrl(config_.register_url, scheme, host_port, path);
+    parse_url(config_.register_url, scheme, host_port, path);
 
-    auto body = adapter_utils::buildNodeEvent(node_event_type::online, config_.node_id, runner_, management_);
+    auto body = adapter_utils::build_node_event(node_event_type::online, config_.node_id, runner_, management_);
 
     try {
         httplib::Client client(scheme + "://" + host_port);
@@ -761,15 +885,15 @@ bool HttpAdapter::doRegister() {
     return false;
 }
 
-void HttpAdapter::doDeregister() {
+void HttpAdapter::do_deregister() {
     if(config_.register_url.empty() || !registered_) return;
 
     std::cout << "[HTTP] Sending deregister to orchestrator...\n";
 
     std::string scheme, host_port, path;
-    parseUrl(config_.register_url, scheme, host_port, path);
+    parse_url(config_.register_url, scheme, host_port, path);
 
-    auto body = adapter_utils::buildNodeEvent(node_event_type::offline, config_.node_id, runner_, management_);
+    auto body = adapter_utils::build_node_event(node_event_type::offline, config_.node_id, runner_, management_);
 
     try {
         httplib::Client client(scheme + "://" + host_port);

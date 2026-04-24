@@ -7,7 +7,7 @@
  * A ResourceProvider resolves a JSON descriptor into a local filesystem path.
  * Implementations (git, local) are loaded as DLLs by ResourceManager.
  *
- * Lifecycle: create_provider() -> validateConfig() -> start() -> resolve() ... -> stop() -> destroy_provider()
+ * Lifecycle: create_provider() -> validate_config() -> start() -> resolve() ... -> stop() -> destroy_provider()
  */
 
 #include <filesystem>
@@ -46,7 +46,7 @@ class ResourceProvider {
      * @param error   Populated with a human-readable error on failure.
      * @return true if config is valid, false otherwise.
      */
-        virtual bool validateConfig(const nlohmann::json& config, std::string& error) = 0;
+        virtual bool validate_config(const nlohmann::json& config, std::string& error) = 0;
 
         /// Start background threads (e.g. cleanup loop). Called after validateConfig.
         virtual void start() {}

@@ -20,7 +20,7 @@ class TransportAdapter {
         virtual std::string name() const = 0;
 
         /// Start the adapter (non-blocking - launches internal threads).
-        /// Must NOT publish online events - use notifyOnline() for that.
+        /// Must NOT publish online events - use notify_online() for that.
         virtual void start() = 0;
 
         /// Stop the adapter (blocks until fully shut down).
@@ -32,5 +32,5 @@ class TransportAdapter {
         /// buildTransportsList will include this adapter AND all previously
         /// loaded adapters with their complete configs.
         /// Default: no-op (adapters that don't publish online events).
-        virtual void notifyOnline() {}
+        virtual void notify_online() {}
 };

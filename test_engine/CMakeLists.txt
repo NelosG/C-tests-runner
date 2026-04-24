@@ -5,7 +5,6 @@ set(CMAKE_CXX_STANDARD 17)
 # Lightweight plugin API - no external dependencies (pure C++17)
 set(ENGINE_SOURCES
         src/test_registry.cpp
-        src/test_scenario_extension.cpp
 )
 
 set(ENGINE_HEADERS
@@ -29,4 +28,11 @@ if(UNIX)
     target_compile_options(test_engine PRIVATE -fvisibility=default)
 endif()
 
-target_include_directories(test_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(test_engine PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../runner_lib/include    # for <test_data.h>
+)
+
+# Windows: import library (.dll.a) is needed by test plugin builds.
+# Override the global throwaway ARCHIVE dir back to OUTPUT_DIR.
+set_target_properties(test_engine PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${OUTPUT_DIR})

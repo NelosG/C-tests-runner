@@ -6,7 +6,7 @@
  *
  * Supports both singleton usage (CLI tools) and per-job instances
  * (concurrent server jobs). When a thread-local active instance is set
- * via setActiveInstance(), REGISTER_TEST() calls route there instead
+ * via set_active_instance(), REGISTER_TEST() calls route there instead
  * of the global singleton.
  */
 
@@ -30,10 +30,10 @@ class TestRegistry {
      * Call before loading plugins so REGISTER_TEST() static initializers
      * register into a per-job registry instead of the global singleton.
      */
-        static void setActiveInstance(TestRegistry* registry);
+        static void set_active_instance(TestRegistry* registry);
 
         /** @brief Clear the thread-local active instance (revert to global). */
-        static void clearActiveInstance();
+        static void clear_active_instance();
 
         bool register_test(std::unique_ptr<TestScenarioExtension> test);
 

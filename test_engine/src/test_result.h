@@ -41,11 +41,15 @@ struct TestResult {
     long long work_ns = 0;
     long long span_ns = 0;
 
-    // Per-test memory stats (from par::memory, reset between tests)
-    long long peak_memory_bytes = 0;
-    long long allocation_count = 0;
-    long long deallocation_count = 0;
-    bool memory_limit_exceeded = false;
+    // Process-level metrics (from sandbox meta-file)
+    int exit_code = -1;
+    long long cg_mem_peak_kb = 0;
+    long long max_rss_kb = 0;
+    double cpu_time_sec = 0.0;
+    double wall_time_sec = 0.0;
+    bool oom_killed = false;
+    bool timed_out = false;
+    std::string stderr_output;
 
     TestResult(
         std::string name,

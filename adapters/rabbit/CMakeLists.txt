@@ -21,6 +21,12 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(amqpcpp libuv)
 
+# AMQP-CPP is a static lib linked into a shared lib - needs -fPIC on Linux
+if(UNIX)
+    set_target_properties(amqpcpp PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    set_target_properties(uv_a PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # RabbitMQ adapter - async AMQP-CPP + libuv, loaded at runtime
 add_library(rabbit_adapter SHARED rabbit_adapter.cpp)
 
@@ -44,7 +50,7 @@ endif()
 target_compile_definitions(rabbit_adapter PRIVATE ADAPTER_EXPORTS)
 
 set_target_properties(rabbit_adapter PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/adapters
-        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/adapters
+        RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_DIR}/adapters
+        LIBRARY_OUTPUT_DIRECTORY ${OUTPUT_DIR}/adapters
         PREFIX ""
 )

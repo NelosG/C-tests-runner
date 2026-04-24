@@ -32,7 +32,7 @@ class LocalResourceProvider : public ResourceProvider {
 
         std::filesystem::path resolve(const nlohmann::json& descriptor) override;
 
-        bool validateConfig(const nlohmann::json& config, std::string& error) override;
+        bool validate_config(const nlohmann::json& config, std::string& error) override;
 
     private:
         std::string base_solutions_;

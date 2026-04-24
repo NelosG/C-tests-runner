@@ -11,11 +11,11 @@ TestRegistry& TestRegistry::instance() {
     return global;
 }
 
-void TestRegistry::setActiveInstance(TestRegistry* registry) {
+void TestRegistry::set_active_instance(TestRegistry* registry) {
     tl_active_registry = registry;
 }
 
-void TestRegistry::clearActiveInstance() {
+void TestRegistry::clear_active_instance() {
     tl_active_registry = nullptr;
 }
 

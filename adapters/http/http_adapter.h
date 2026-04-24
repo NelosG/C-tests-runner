@@ -22,8 +22,12 @@
 #include <adapter_api.h>
 #include <adapter_context.h>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <httplib.h>
 #include <memory>
+#include <mutex>
+#include <nlohmann/json.hpp>
 #include <test_execution_adapter.h>
 #include <test_runner_service.h>
 #include <thread>
@@ -47,13 +51,20 @@ class HttpAdapter : public TestExecutionAdapter {
         std::string name() const override { return "HTTP"; }
         void start() override;
         void stop() override;
-        void notifyOnline() override;
+        void notify_online() override;
 
     private:
-        bool doRegister();
-        void doDeregister();
-        void setupTestRoutes();
-        void setupManagementRoutes();
+        bool do_register();
+        void do_deregister();
+        void setup_test_routes();
+        void setup_management_routes();
+
+        // --- Progress event publisher (separate worker thread) ---
+        /// Drain the bounded queue, POSTing each event to progress_url_.
+        /// Drops events on network failure. Exits when progress_stop_ is set.
+        void progress_worker_loop();
+        /// Push an event onto the queue, evicting oldest if full.
+        void enqueue_progress(nlohmann::json event);
 
         TestRunnerService& runner_;
         const ManagementAPI* management_;  ///< May be nullptr if no management needed.
@@ -67,4 +78,21 @@ class HttpAdapter : public TestExecutionAdapter {
         std::thread server_thread_;
         std::atomic<bool> listen_failed_{false};
         std::atomic<bool> registered_{false};
+
+        // --- Progress publisher state ---
+        std::thread progress_thread_;
+        std::deque<nlohmann::json> progress_queue_;
+        std::mutex progress_mutex_;
+        std::condition_variable progress_cv_;
+        std::atomic<bool> progress_stop_{false};
+        std::string progress_url_;  ///< Derived from register_url at start().
+        static constexpr size_t kProgressQueueMax = 100;
+
+        // Counters for visibility into progress delivery health. All published
+        // events are counted (HTTP 2xx); drops are split between "no room in the
+        // local queue" (orchestrator can't keep up / engine bursting too fast)
+        // and "HTTP send to orchestrator failed" (network / server unhealthy).
+        std::atomic<uint64_t> progress_published_{0};
+        std::atomic<uint64_t> progress_dropped_send_{0};
+        std::atomic<uint64_t> progress_dropped_queue_{0};
 };

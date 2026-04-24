@@ -22,7 +22,7 @@ endif()
 
 # Output to resource_providers/ subdirectory next to the executable
 set_target_properties(resource_git PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/resource_providers
-        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/resource_providers
+        RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_DIR}/resource_providers
+        LIBRARY_OUTPUT_DIRECTORY ${OUTPUT_DIR}/resource_providers
         PREFIX ""
 )

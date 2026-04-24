@@ -108,7 +108,7 @@ class UvAmqpHandler : public AMQP::ConnectionHandler {
                 output_buffer_.insert(output_buffer_.end(), data, data + size);
                 return;
             }
-            doWrite(data, size);
+            do_write(data, size);
         }
 
         /// AMQP connection is ready (handshake complete)
@@ -159,7 +159,7 @@ class UvAmqpHandler : public AMQP::ConnectionHandler {
             std::vector<char> data;
         };
 
-        void doWrite(const char* data, size_t size) {
+        void do_write(const char* data, size_t size) {
             auto* wr = new WriteReq;
             wr->data.assign(data, data + size);
             wr->req.data = wr;
@@ -178,9 +178,9 @@ class UvAmqpHandler : public AMQP::ConnectionHandler {
             }
         }
 
-        void flushOutputBuffer() {
+        void flush_output_buffer() {
             if(output_buffer_.empty()) return;
-            doWrite(output_buffer_.data(), output_buffer_.size());
+            do_write(output_buffer_.data(), output_buffer_.size());
             output_buffer_.clear();
         }
 
@@ -208,7 +208,7 @@ class UvAmqpHandler : public AMQP::ConnectionHandler {
                 &self->connect_req_,
                 &self->tcp_handle_,
                 res->ai_addr,
-                onTcpConnect
+                on_tcp_connect
             );
 
             uv_freeaddrinfo(res);
@@ -219,7 +219,7 @@ class UvAmqpHandler : public AMQP::ConnectionHandler {
             }
         }
 
-        static void onTcpConnect(uv_connect_t* req, int status) {
+        static void on_tcp_connect(uv_connect_t* req, int status) {
             auto* self = static_cast<UvAmqpHandler*>(req->data);
 
             if(status != 0) {
@@ -233,12 +233,12 @@ class UvAmqpHandler : public AMQP::ConnectionHandler {
             self->connected_ = true;
 
             // Flush any buffered AMQP protocol data
-            self->flushOutputBuffer();
+            self->flush_output_buffer();
 
             // Start reading from socket
             int r = uv_read_start(
                 reinterpret_cast<uv_stream_t*>(&self->tcp_handle_),
-                allocBuffer,
+                alloc_buffer,
                 onRead
             );
             if(r != 0) {
@@ -247,7 +247,7 @@ class UvAmqpHandler : public AMQP::ConnectionHandler {
             }
         }
 
-        static void allocBuffer(uv_handle_t*, size_t suggested, uv_buf_t* buf) {
+        static void alloc_buffer(uv_handle_t*, size_t suggested, uv_buf_t* buf) {
             buf->base = new(std::nothrow) char[suggested];
             buf->len = buf->base ? static_cast<unsigned int>(suggested) : 0;
         }
