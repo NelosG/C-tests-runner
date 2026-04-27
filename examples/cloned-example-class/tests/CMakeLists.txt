@@ -1,36 +1,13 @@
-# ============================================
-# Common settings for all plugins
-# ============================================
-if(WIN32)
-    add_compile_definitions(PLUGIN_EXPORTS)
-endif()
-
-if(UNIX)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -fvisibility=default")
-endif()
-
-# Plugin output directory
-file(MAKE_DIRECTORY ${PLUGIN_OUTPUT_DIR})
+cmake_minimum_required(VERSION 3.14)
+project(scan_tests_class CXX)
+set(CMAKE_CXX_STANDARD 17)
 
 include_directories(include)
 
-# ============================================
-# Helper function to add a plugin target
-# ============================================
-function(add_plugin PLUGIN_NAME)
-    add_library(${PLUGIN_NAME} SHARED ${ARGN})
-    target_link_libraries(${PLUGIN_NAME}
-            PUBLIC test_engine
-    )
-    set_target_properties(${PLUGIN_NAME} PROPERTIES
-            LIBRARY_OUTPUT_DIRECTORY ${PLUGIN_OUTPUT_DIR}
-            RUNTIME_OUTPUT_DIRECTORY ${PLUGIN_OUTPUT_DIR}
-            PREFIX ""
-    )
+function(add_plugin name)
+    add_library(${name} SHARED ${ARGN})
+    target_link_libraries(${name} PRIVATE test_engine runner_lib)
+    set_target_properties(${name} PROPERTIES PREFIX "")
 endfunction()
 
-
-# ============================================
-# Plugins
-# ============================================
-add_plugin(plugin_scan_class src/scan-test-correctness.cpp)
+add_plugin(plugin_correctness src/scan-test-correctness.cpp)

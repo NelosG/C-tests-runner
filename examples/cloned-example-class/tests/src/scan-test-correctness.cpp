@@ -1,52 +1,29 @@
-#include <random>
-#include <register_test.h>
-#include <scan.h>
-#include <test_scenario_extension.h>
-#include <vector>
+#include <test_builder.h>
 
 class ScanCorrectnessTest final : public TestScenarioExtension {
-    std::vector<Test> getTests() const override {
-        constexpr int array_size = 1e8;
-
-        auto vec = std::make_shared<std::vector<long long>>(array_size);
-        auto result = std::make_shared<std::vector<long long>>(array_size);
-
-        return {
-            Test{
-                "1e8",
-                [vec]() {
-                    std::mt19937_64 gen(42);
-                    std::generate(vec->begin(), vec->end(), gen);
-                },
-                [vec, result]() {
-                    Scan scan(*vec);
-                    auto internal = scan.getInternal();
-                    internal.getScanned(*result);
-
-                    long longVal = 111;
-                    auto generic = Scan::Generic(222, longVal);
-                    scan.acceptGenericConst(generic);
-                },
-                [vec, result]() -> std::pair<bool, std::string> {
-                    if(vec->size() != result->size()) {
-                        return {false, "Wrong result size"};
-                    }
-
-                    long long counter = 0;
-                    for(size_t i = 0; i < vec->size(); ++i) {
-                        counter += (*vec)[i];
-                        if(counter != (*result)[i]) {
-                            return {false, "Scan failed at index " + std::to_string(i)};
-                        }
-                    }
-                    return {true, ""};
-                }
-            }
-        };
-    }
-
     public:
-        std::string name() const override { return "SCAN_CORRECTNESS.Basic"; }
+        std::vector<Test> get_tests() const override {
+            return {
+                {
+                    "1e7",
+                    setup::random_array<long long>("array", 10000000),
+                    [](const TestData& in, const TestData& out) -> std::pair<bool, std::string> {
+                        auto input = in.read_array<long long>("array");
+                        auto output = out.read_array<long long>("result");
+                        if(input.size() != output.size()) return {false, "Size mismatch"};
+                        long long sum = 0;
+                        for(std::size_t i = 0; i < input.size(); ++i) {
+                            sum += input[i];
+                            if(sum != output[i]) return {false, "Mismatch at " + std::to_string(i)};
+                        }
+                        return {true, ""};
+                    }
+                },
+            };
+        }
+
+        std::string name() const override { return "Correctness.Basic"; }
+        ScenarioType scenario_type() const override { return ScenarioType::CORRECTNESS; }
 };
 
 REGISTER_TEST(ScanCorrectnessTest)

@@ -1,0 +1,7 @@
+{
+    "name": "Parallel Scan",
+    "mode": "correctness",
+    "allowedFrameworks": ["openmp"],
+    "allowedPackages": ["parallel_lib"],
+    "correctnessMode": "stress"
+}

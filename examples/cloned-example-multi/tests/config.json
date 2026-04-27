@@ -1,0 +1,7 @@
+{
+    "name": "Parallel Scan (multi-framework)",
+    "mode": "all",
+    "allowedFrameworks": ["openmp", "parlay", "cilk"],
+    "allowedPackages": ["OpenMP", "parallel_lib", "parlay", "parlaylib", "Cilk"],
+    "correctnessMode": "stress"
+}

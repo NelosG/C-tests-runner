@@ -1,0 +1,6 @@
+{
+    "name": "Parallel Scan (Cilk)",
+    "mode": "performance",
+    "allowedFrameworks": ["cilk"],
+    "allowedPackages": ["Cilk"]
+}

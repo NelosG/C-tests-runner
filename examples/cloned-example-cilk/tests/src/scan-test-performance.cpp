@@ -5,8 +5,8 @@ class ScanPerformanceTest final : public TestScenarioExtension {
         std::vector<Test> get_tests() const override {
             return {
                 {
-                    "1e7",
-                    setup::random_array<long long>("array", 10000000),
+                    "1e8",
+                    setup::random_array<long long>("array", 100000000),
                     [](const TestData& in, const TestData& out) -> std::pair<bool, std::string> {
                         auto input = in.read_array<long long>("array");
                         auto output = out.read_array<long long>("result");
@@ -22,7 +22,7 @@ class ScanPerformanceTest final : public TestScenarioExtension {
             };
         }
 
-        std::string name() const override { return "Performance.Basic"; }
+        std::string name() const override { return "Performance.Scan"; }
         ScenarioType scenario_type() const override { return ScenarioType::PERFORMANCE; }
 };
 

@@ -1,0 +1,6 @@
+{
+    "name": "Parallel Scan (ParlayLib)",
+    "mode": "performance",
+    "allowedFrameworks": ["parlay"],
+    "allowedPackages": ["parlay", "parlaylib"]
+}

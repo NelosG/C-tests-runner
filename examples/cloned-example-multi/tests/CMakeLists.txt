@@ -1,9 +1,7 @@
 cmake_minimum_required(VERSION 3.14)
-project(scan_tests CXX)
+project(scan_tests_multi CXX)
 set(CMAKE_CXX_STANDARD 17)
 
-# `test_engine` and `runner_lib` are provided by the engine wrapper as
-# imported targets - they carry the right include dirs / compile options.
 include_directories(include)
 
 function(add_plugin name)
