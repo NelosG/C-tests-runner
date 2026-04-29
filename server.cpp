@@ -13,147 +13,137 @@
  */
 
 #include <adapter_manager.h>
+#include <thread>
+#include <cpu_isolator.h>
 #include <main_common.h>
+#include <path_utils.h>
 #include <resource_manager.h>
+#include <sandbox_launcher.h>
 #include <test_runner_service.h>
-#include <functional>
 #include <iostream>
 #include <string>
-#include <unordered_map>
 #include <nlohmann/json.hpp>
 
 
 namespace {
 
-    void trimRight(std::string& s) {
-        while(!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' '))
-            s.pop_back();
+    std::string rel_path(const fs::path& p, const fs::path& base) {
+        return path_utils::rel(p, base);
     }
 
-    std::string relPath(const fs::path& p, const fs::path& base) {
-        if(base.empty() || p.empty()) return p.generic_string();
-        try { return fs::proximate(p, base).generic_string(); } catch(...) { return p.generic_string(); }
-    }
-
-    // ============================================================================
-    // Interactive console
-    // ============================================================================
-
-    using command_handler = std::function<bool(AdapterManager &, const std::string &)>;
-
-    const std::unordered_map<std::string, std::string> command_aliases = {
-        {"l", "list"},
-        {"u", "unload"},
-        {"h", "help"},
-        {"q", "quit"},
-    };
-
-    std::unordered_map<std::string, command_handler> buildCommandHandlers() {
-        std::unordered_map<std::string, command_handler> handlers;
-
-        handlers["list"] = [](AdapterManager& mgr, const std::string&) {
-            std::cout << "[Server] Adapters:\n" << mgr.list().dump(2) << "\n";
-            return true;
-        };
-
-        handlers["load"] = [](AdapterManager& mgr, const std::string& args) {
-            std::string rest = args;
-            while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
-            auto sp = rest.find(' ');
-            std::string name = (sp == std::string::npos) ? rest : rest.substr(0, sp);
-            nlohmann::json lc;
-            if(sp != std::string::npos) {
-                std::string js = rest.substr(sp + 1);
-                while(!js.empty() && js[0] == ' ') js.erase(js.begin());
-                if(!js.empty()) {
-                    try { lc = nlohmann::json::parse(js); } catch(const std::exception& e) {
-                        std::cerr << "[Server] Invalid JSON: " << e.what() << "\n";
-                        return true;
-                    }
-                }
-            }
-            if(name.empty()) {
-                std::cout << "[Server] Usage: load <adapter_name> [json_config]\n";
-            } else {
-                std::cout << "[Server] Loading adapter '" << name << "'...\n";
-                if(mgr.load(name, lc))
-                    std::cout << "[Server] '" << name << "' loaded successfully\n";
-                else
-                    std::cerr << "[Server] Failed to load '" << name << "'\n";
-            }
-            return true;
-        };
-
-        handlers["unload"] = [](AdapterManager& mgr, const std::string& args) {
-            std::string rest = args;
-            while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
-            if(rest.empty()) {
-                std::cout << "[Server] Usage: unload <adapter_name>\n";
-            } else {
-                std::cout << "[Server] Unloading adapter '" << rest << "'...\n";
-                if(mgr.unload(rest))
-                    std::cout << "[Server] '" << rest << "' unloaded\n";
-                else
-                    std::cerr << "[Server] '" << rest << "' not found or not running\n";
-            }
-            return true;
-        };
-
-        handlers["rescan"] = [](AdapterManager& mgr, const std::string&) {
-            mgr.rescan();
-            std::cout << "[Server] Adapter directory rescanned\n";
-            std::cout << mgr.list().dump(2) << "\n";
-            return true;
-        };
-
-        handlers["help"] = [](AdapterManager&, const std::string&) {
-            std::cout << "[Server] Commands:\n"
-                << "  l / list              - list all adapters (available + running)\n"
-                << "  load <name> [json]    - load and start an adapter\n"
-                << "  unload <name> / u     - stop and unload an adapter\n"
-                << "  rescan                - re-scan adapters directory for new DLLs\n"
-                << "  q / quit              - shutdown server\n";
-            return true;
-        };
-
-        handlers["quit"] = [](AdapterManager&, const std::string&) { return false; };
-
-        return handlers;
-    }
-
-    void runConsole(AdapterManager& manager) {
-        auto handlers = buildCommandHandlers();
-        std::string line;
-        while(g_running&& std::getline(std::cin, line)) {
-            trimRight(line);
-            if(line.empty()) continue;
-            auto sp = line.find(' ');
-            auto cmd = (sp == std::string::npos) ? line : line.substr(0, sp);
-            auto args = (sp == std::string::npos) ? std::string{} : line.substr(sp + 1);
-            auto alias_it = command_aliases.find(cmd);
-            if(alias_it != command_aliases.end()) cmd = alias_it->second;
-            auto handler_it = handlers.find(cmd);
-            if(handler_it != handlers.end()) {
-                if(!handler_it->second(manager, args)) break;
-            } else {
-                std::cout << "[Server] Unknown command: '" << line << "'. Type 'help'.\n";
-            }
+    /// Block until the signal handler flips g_running. Management (load/unload
+    /// adapter, queue status etc.) is performed via the HTTP/RabbitMQ control
+    /// surface, not the console - so the server has no stdin reader and won't
+    /// deadlock libc cleanup on detached I/O threads at exit.
+    void wait_for_shutdown() {
+        std::cout << "[Server] Running. Send SIGTERM/SIGINT to stop.\n";
+        while(g_running) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 
     // ============================================================================
-    // Server mode
+    // Server mode helpers
     // ============================================================================
 
-    int runServer(const common_config& cfg, const std::string& node_id_arg) {
-        auto rel = [&](const auto& p) { return relPath(p, cfg.exe_dir); };
+    /// Resolve nodeId: --node-id arg wins over server.json. Empty result is fatal.
+    std::string resolve_node_id(const std::string& arg, const config::ServerConfig& sc) {
+        return arg.empty() ? sc.nodeId.value_or("") : arg;
+    }
 
+    /// Apply server.json + CORRECTNESS_WORKERS env onto the build_config skeleton.
+    void apply_server_config_to_build_config(const config::ServerConfig& sc,
+                                         BuildService::BuildConfig& bc) {
+        if(sc.correctnessWorkers) bc.correctness_workers = *sc.correctnessWorkers;
+        bc.default_memory_limit_mb     = sc.defaultMemoryLimitMb;
+        bc.default_threads             = sc.defaultThreads;
+        bc.default_wall_time_sec       = sc.defaultWallTimeSec;
+        bc.default_cpu_time_sec        = sc.defaultCpuTimeSec;
+        bc.sandbox_process_multiplier  = sc.sandboxProcessMultiplier;
+        std::string env_cw = config::get_env("CORRECTNESS_WORKERS", "");
+        if(!env_cw.empty()) {
+            try { bc.correctness_workers = std::stoi(env_cw); } catch(...) {}
+        }
+    }
+
+    /// Pull sandbox + cpuIsolation sub-objects out of server.json.
+    struct RuntimeKnobs {
+        SandboxLauncher::Config sandbox;
+        CpuIsolator::Config cpu;
+    };
+    RuntimeKnobs load_runtime_knobs(const fs::path& server_json_path) {
+        RuntimeKnobs out;
+        auto j = config::read_json_file(server_json_path);
+        if(j.contains("sandbox")) {
+            const auto& s = j["sandbox"];
+            out.sandbox.isolate_path = s.value("isolatePath", "/usr/bin/isolate");
+            out.sandbox.max_box_id   = s.value("maxBoxId", 99);
+        }
+        if(j.contains("cpuIsolation")) {
+            const auto& c = j["cpuIsolation"];
+            out.cpu.numa_node     = c.value("numaNode", -1);
+            out.cpu.infra_reserve = c.value("infraReserve", 1);
+        }
+        return out;
+    }
+
+    void log_server_info(const std::string& node_id, const common_config& cfg,
+                       const BuildService::BuildConfig& bc) {
+        auto rel = [&](const auto& p) { return rel_path(p, cfg.exe_dir); };
+        std::cout << "[Server] node_id:             " << node_id << "\n"
+            << "[Server] engine_lib:          " << rel(bc.engine_lib_path) << "\n"
+            << "[Server] parallel_lib:        " << rel(bc.parallel_lib_path) << "\n"
+            << "[Server] cmake:               " << bc.cmake_executable << "\n"
+            << "[Server] correctness workers: " << bc.correctness_workers << "\n"
+            << "[Server] adapters_dir:        " << rel(cfg.adapters_dir) << "\n"
+            << "[Server] config_dir:          " << rel(cfg.config_dir) << "\n"
+            << "[Server] providers_dir:       " << rel(cfg.providers_dir) << "\n";
+    }
+
+    /// Per-job framework availability is checked again at submission time.
+    /// This is a startup probe only - failure is non-fatal.
+    void probe_frameworks(const BuildService::BuildConfig& bc) {
+        BuildService probe(bc);
+        std::cout << "[Server] Framework availability:\n";
+        for(const auto& fw : {"openmp", "parlay", "cilk"}) {
+            auto [ok, err] = probe.validate_framework(fw);
+            if(ok) std::cout << "  + " << fw << "\n";
+            else   std::cout << "  - " << fw << " (" << err << ")\n";
+        }
+    }
+
+    void bootstrap_resource_providers(ResourceManager& rm,
+                                     const std::vector<std::string>& names) {
+        for(const auto& name : names) {
+            std::cout << "[Server] Auto-loading resource provider: " << name << "\n";
+            std::string err;
+            if(!rm.load(name, {}, &err)) {
+                std::cerr << "[Server] Warning: failed to auto-load provider '" << name << "'"
+                    << (err.empty() ? "" : ": " + err) << "\n";
+            }
+        }
+    }
+
+    /// Returns number of successfully loaded adapters.
+    int bootstrap_adapters(AdapterManager& am, const std::vector<std::string>& names,
+                           const fs::path& config_dir) {
+        int loaded = 0;
+        for(const auto& name : names) {
+            auto cfg_json = config::read_json_file(config_dir / (name + ".json"));
+            std::cout << "[Server] Auto-loading adapter: " << name << "\n";
+            if(am.load(name, cfg_json)) ++loaded;
+            else std::cerr << "[Server] Warning: failed to auto-load '" << name << "'\n";
+        }
+        return loaded;
+    }
+
+    // ============================================================================
+    // Server mode entry point
+    // ============================================================================
+
+    int run_server(const common_config& cfg, const std::string& node_id_arg) {
         auto server_config = config::ServerConfig::load(cfg.config_dir / "server.json");
-
-        // Resolve nodeId: arg overrides config
-        std::string node_id = node_id_arg.empty()
-            ? server_config.nodeId.value_or("")
-            : node_id_arg;
+        std::string node_id = resolve_node_id(node_id_arg, server_config);
         if(node_id.empty()) {
             std::cerr << "[Server] ERROR: node ID is required.\n"
                 << "  Use --node-id <id> or set 'nodeId' in config/server.json\n";
@@ -161,70 +151,57 @@ namespace {
         }
 
         auto build_config = cfg.build_config;
-        if(server_config.correctnessWorkers)
-            build_config.correctness_workers = *server_config.correctnessWorkers;
-        build_config.default_memory_limit_mb = server_config.defaultMemoryLimitMb;
-        std::string cw = config::getEnv("CORRECTNESS_WORKERS", "");
-        if(!cw.empty()) { try { build_config.correctness_workers = std::stoi(cw); } catch(...) {} }
+        apply_server_config_to_build_config(server_config, build_config);
 
-        std::cout << "[Server] node_id:             " << node_id << "\n"
-            << "[Server] engine_lib:          " << rel(build_config.engine_lib_path) << "\n"
-            << "[Server] parallel_lib:        " << rel(build_config.parallel_lib_path) << "\n"
-            << "[Server] cmake:               " << build_config.cmake_executable << "\n"
-            << "[Server] correctness workers: " << build_config.correctness_workers << "\n"
-            << "[Server] adapters_dir:        " << rel(cfg.adapters_dir) << "\n"
-            << "[Server] config_dir:          " << rel(cfg.config_dir) << "\n"
-            << "[Server] providers_dir:       " << rel(cfg.providers_dir) << "\n";
+        log_server_info(node_id, cfg, build_config);
 
-        // Create ResourceManager and load default providers
+        auto knobs = load_runtime_knobs(cfg.config_dir / "server.json");
+        probe_frameworks(build_config);
+
         ResourceManager resource_manager(cfg.providers_dir, cfg.config_dir);
-        for(const auto& name : server_config.defaultResourceProviders) {
-            std::cout << "[Server] Auto-loading resource provider: " << name << "\n";
-            std::string load_error;
-            if(!resource_manager.load(name, {}, &load_error)) {
-                std::cerr << "[Server] Warning: failed to auto-load provider '" << name << "'"
-                    << (load_error.empty() ? "" : ": " + load_error) << "\n";
-            }
-        }
+        bootstrap_resource_providers(resource_manager, server_config.defaultResourceProviders);
 
-        TestRunnerService runner(build_config, resource_manager);
+        TestRunnerService runner(build_config, knobs.sandbox, knobs.cpu, resource_manager);
         AdapterManager adapter_manager(
-            runner,
-            cfg.adapters_dir,
-            cfg.config_dir,
-            cfg.exe_dir,
-            node_id,
-            &resource_manager
+            runner, cfg.adapters_dir, cfg.config_dir,
+            cfg.exe_dir, node_id, &resource_manager
         );
 
-        for(const auto& name : server_config.defaultAdapters) {
-            nlohmann::json adapter_config = config::readJsonFile(cfg.config_dir / (name + ".json"));
-            std::cout << "[Server] Auto-loading adapter: " << name << "\n";
-            if(!adapter_manager.load(name, adapter_config)) {
-                std::cerr << "[Server] Warning: failed to auto-load '" << name << "'\n";
-            }
+        int adapters_loaded = bootstrap_adapters(adapter_manager,
+            server_config.defaultAdapters, cfg.config_dir);
+        if(adapters_loaded == 0 && !server_config.defaultAdapters.empty()) {
+            std::cerr << "[Server] FATAL: no adapters loaded. Cannot accept jobs. Exiting.\n";
+            return 1;
         }
 
-        std::cout << "[Server] Running. Type 'help' for commands, 'q' to quit.\n";
-        runConsole(adapter_manager);
+        wait_for_shutdown();
         std::cout << "\n[Server] Shutting down...\n";
-        adapter_manager.stopAll();
+        adapter_manager.stop_all();
         std::cout << "[Server] Stopped.\n";
+        resource_manager.stop_all();
+        std::cout << "[Server] Exit.\n";
         return 0;
     }
 
 } // anonymous namespace
 
 int main(int argc, char** argv) {
+    // Line-buffer stdout/stderr so log lines appear in `docker logs` /
+    // systemd-journal in real time. Default behaviour for std::cout when
+    // attached to a non-TTY (e.g. Docker captures fd 1 as a pipe) is full
+    // buffering - log lines would only flush at 4 KiB chunks or on exit.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+
     #ifdef _WIN32
-    SetConsoleCtrlHandler(consoleHandler, TRUE);
+    SetConsoleCtrlHandler(console_handler, TRUE);
     #else
-    signal(SIGINT, signalHandler);
-    signal(SIGTERM, signalHandler);
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
     #endif
 
     fs::path exe_path = fs::weakly_canonical(fs::path(argv[0]));
-    auto cfg = setupCommon(exe_path);
+    auto cfg = setup_common(exe_path);
 
     std::string node_id_arg;
 
@@ -242,5 +219,5 @@ int main(int argc, char** argv) {
         }
     }
 
-    return runServer(cfg, node_id_arg);
+    return run_server(cfg, node_id_arg);
 }

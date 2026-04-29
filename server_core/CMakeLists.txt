@@ -16,7 +16,6 @@ set(CORE_SOURCES
         src/framework_detector.cpp
         src/job_queue.cpp
         src/json_scenario_loader.cpp
-        src/numa_utils.cpp
         src/pipeline.cpp
         src/plugin_loader.cpp
         src/sandbox_launcher.cpp
@@ -98,4 +97,28 @@ if(UNIX)
     endif()
     find_package(Threads REQUIRED)
     target_link_libraries(server_core PUBLIC Threads::Threads)
+endif()
+
+# hwloc: portable hardware topology (Open MPI project). When present, takes
+# precedence over libnuma + sysfs path-walking in numa_utils - gives us
+# cross-platform SMT-physical detection, L3 cache grouping, and a single
+# code path on Linux / Windows / macOS / Docker. Optional - if not found,
+# we fall back to the platform-specific branches below.
+option(USE_HWLOC "Use hwloc for CPU/cache topology if available (default ON)" ON)
+if(USE_HWLOC)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(HWLOC IMPORTED_TARGET hwloc)
+    endif()
+    if(HWLOC_FOUND)
+        target_link_libraries(server_core PRIVATE PkgConfig::HWLOC)
+        target_compile_definitions(server_core PRIVATE NUMA_USE_HWLOC)
+        target_sources(server_core PRIVATE src/numa_utils_hwloc.cpp)
+        message(STATUS "Topology: using hwloc ${HWLOC_VERSION}")
+    else()
+        target_sources(server_core PRIVATE src/numa_utils.cpp)
+        message(STATUS "Topology: hwloc not found, falling back to libnuma/sysfs (Linux) / GetLogicalProcessorInformationEx (Windows)")
+    endif()
+else()
+    target_sources(server_core PRIVATE src/numa_utils.cpp)
 endif()

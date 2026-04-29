@@ -28,7 +28,7 @@
  *
  * Run command:
  *   run --test-id <id> --test-dir <dir> --solution <dir> [--solution <dir2>]
- *       [--mode correctness|performance|all] [--threads N] [--memory MB]
+ *       [--threads N] [--memory MB]
  *
  * Logs node online/offline events from node.events queue.
  */
@@ -52,7 +52,7 @@ namespace fs = std::filesystem;
 #include <windows.h>
 #endif
 
-static std::string generateId() {
+static std::string generate_id() {
     thread_local std::mt19937 gen(std::random_device{}());
     std::uniform_int_distribution<uint32_t> dist;
     std::ostringstream ss;
@@ -75,9 +75,9 @@ static MockState g_state;
 // Run command - submit test jobs via RabbitMQ
 // ============================================================================
 
-static void submitRunRabbit(const std::string& args_str) {
+static void submit_run_rabbit(const std::string& args_str) {
     RunArgs args;
-    if(!parseRunArgs(args_str, args)) return;
+    if(!parse_run_args(args_str, args)) return;
 
     if(!g_state.channel || !g_state.rpc_channel) {
         std::cerr << "[Mock] No AMQP channel available\n";
@@ -89,17 +89,17 @@ static void submitRunRabbit(const std::string& args_str) {
     std::cout << "\n[Mock] ========== Submitting test run via RabbitMQ ==========\n"
         << "  test_id:    " << args.test_id << "\n"
         << "  test_dir:   " << args.test_dir << "\n"
-        << "  mode:       " << args.mode << " (routing_key: " << args.mode << ")\n"
         << "  threads:    " << args.threads << "\n"
-        << "  memory:     " << (args.memory_limit_mb >= 0 ? std::to_string(args.memory_limit_mb) + " MB" : "default") << "\n"
+        << "  memory:     " << (args.memory_limit_mb >= 0 ? std::to_string(args.memory_limit_mb) + " MB" : "default") <<
+        "\n"
         << "  solutions:  " << args.solutions.size() << "\n";
     for(size_t i = 0; i < args.solutions.size(); ++i) {
         std::cout << "    [" << (i + 1) << "] " << fs::path(args.solutions[i]).filename().string()
             << " (" << args.solutions[i] << ")\n";
     }
 
-    // Routing key = mode (single queue, engine routes internally by mode field)
-    std::string routing_key = args.mode;
+    // Single routing key - mode is determined by assignment config.json
+    std::string routing_key = "task";
 
     // Declare exclusive reply queue to collect results
     g_state.rpc_channel->declareQueue(AMQP::exclusive + AMQP::autodelete)
@@ -131,9 +131,11 @@ static void submitRunRabbit(const std::string& args_str) {
                                           << ": " << solution << " [" << mode << "] "
                                           << status << " (job=" << job_id << ") ===\n";
                                       if(resp.contains("correctness"))
-                                          std::cout << "  Correctness: " << summarizeTests(resp["correctness"]) << "\n";
+                                          std::cout << "  Correctness: " << summarize_tests(resp["correctness"]) <<
+                                              "\n";
                                       if(resp.contains("performance"))
-                                          std::cout << "  Performance: " << summarizeTests(resp["performance"]) << "\n";
+                                          std::cout << "  Performance: " << summarize_tests(resp["performance"]) <<
+                                              "\n";
                                       if(resp.value("performanceSkipped", false))
                                           std::cout << "  Performance: SKIPPED ("
                                               << resp.value("performanceSkipReason", "") << ")\n";
@@ -159,14 +161,13 @@ static void submitRunRabbit(const std::string& args_str) {
                            {"testSource", {{"path", args.test_dir}}},
                            {"solutionSourceType", "local"},
                            {"solutionSource", {{"path", sol_dir}}},
-                           {"mode", args.mode},
                            {"threads", args.threads}
                        };
                        if(args.memory_limit_mb >= 0) {
                            task["memoryLimitMb"] = args.memory_limit_mb;
                        }
 
-                       std::string corr_id = generateId();
+                       std::string corr_id = generate_id();
                        std::string body = task.dump();
                        AMQP::Envelope envelope(body.data(), body.size());
                        envelope.setContentType("application/json");
@@ -176,7 +177,6 @@ static void submitRunRabbit(const std::string& args_str) {
 
                        std::string sol_name = fs::path(sol_dir).filename().string();
                        std::cout << "[Mock] Publishing: " << sol_name
-                           << " | mode=" << args.mode
                            << " | routing_key=" << routing_key
                            << " | corr_id=" << corr_id << "\n";
 
@@ -211,13 +211,13 @@ static void submitRunRabbit(const std::string& args_str) {
 // Control RPC
 // ============================================================================
 
-static void sendControlRpc(const nlohmann::json& request, int timeout_ms = 5000) {
+static void send_control_rpc(const nlohmann::json& request, int timeout_ms = 5000) {
     if(!g_state.rpc_channel) {
         std::cerr << "[Mock] No RPC channel\n";
         return;
     }
 
-    std::string corr_id = generateId();
+    std::string corr_id = generate_id();
     std::string req_type = request.value("type", "?");
 
     g_state.rpc_channel->declareQueue(AMQP::exclusive + AMQP::autodelete)
@@ -390,14 +390,14 @@ int main(int argc, char** argv) {
                                 g_state.handler->shutdown();
                                 uv_stop(g_state.loop);
                             } else if(line_buf == "qs" || line_buf == "queue") {
-                                sendControlRpc({{"type", "queueStatus"}});
+                                send_control_rpc({{"type", "queueStatus"}});
                             } else if(line_buf == "s" || line_buf == "status") {
-                                sendControlRpc({{"type", "statusRequest"}});
+                                send_control_rpc({{"type", "statusRequest"}});
                             } else if(line_buf == "a" || line_buf == "adapters") {
-                                sendControlRpc({{"type", "listAdapters"}});
+                                send_control_rpc({{"type", "listAdapters"}});
                             } else if(line_buf == "av" || line_buf == "available") {
-                                sendControlRpc({{"type", "listAvailableAdapters"}});
-                            } else if(startsWith(line_buf, "config ")) {
+                                send_control_rpc({{"type", "listAvailableAdapters"}});
+                            } else if(starts_with(line_buf, "config ")) {
                                 std::string rest = line_buf.substr(7);
                                 while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
                                 auto sp = rest.find(' ');
@@ -410,7 +410,7 @@ int main(int argc, char** argv) {
                                     while(!val_str.empty() && val_str[0] == ' ') val_str.erase(val_str.begin());
                                     try {
                                         int val = std::stoi(val_str);
-                                        sendControlRpc(
+                                        send_control_rpc(
                                             {
                                                 {"type", "updateConfig"},
                                                 {"config", {{key, val}}}
@@ -420,7 +420,7 @@ int main(int argc, char** argv) {
                                         std::cout << "[Mock] Invalid value (expected integer): " << val_str << "\n";
                                     }
                                 }
-                            } else if(startsWith(line_buf, "a-load ")) {
+                            } else if(starts_with(line_buf, "a-load ")) {
                                 std::string rest = line_buf.substr(7);
                                 while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
                                 auto sp = rest.find(' ');
@@ -433,7 +433,7 @@ int main(int argc, char** argv) {
                                         std::cerr << "[Mock] Invalid config JSON\n";
                                     }
                                 }
-                                sendControlRpc(
+                                send_control_rpc(
                                     {
                                         {"type", "loadAdapter"},
                                         {"adapter", name},
@@ -441,61 +441,61 @@ int main(int argc, char** argv) {
                                     },
                                     15000
                                 );
-                            } else if(startsWith(line_buf, "a-unload ")) {
+                            } else if(starts_with(line_buf, "a-unload ")) {
                                 std::string rest = line_buf.substr(9);
                                 while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
                                 if(rest.empty()) {
                                     std::cout << "[Mock] Usage: a-unload <adapter_name>\n";
                                 } else {
-                                    sendControlRpc(
+                                    send_control_rpc(
                                         {
                                             {"type", "unloadAdapter"},
                                             {"adapter", rest}
                                         }
                                     );
                                 }
-                            } else if(startsWith(line_buf, "cancel ") || startsWith(line_buf, "c ")) {
-                                std::string rest = startsWith(line_buf, "c ")
+                            } else if(starts_with(line_buf, "cancel ") || starts_with(line_buf, "c ")) {
+                                std::string rest = starts_with(line_buf, "c ")
                                     ? line_buf.substr(2)
                                     : line_buf.substr(7);
                                 while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
                                 if(rest.empty()) {
                                     std::cout << "[Mock] Usage: cancel <job_id>\n";
                                 } else {
-                                    sendControlRpc(
+                                    send_control_rpc(
                                         {
                                             {"type", "cancelJob"},
                                             {"jobId", rest}
                                         }
                                     );
                                 }
-                            } else if(startsWith(line_buf, "job ") || startsWith(line_buf, "j ")) {
-                                std::string rest = startsWith(line_buf, "j ")
+                            } else if(starts_with(line_buf, "job ") || starts_with(line_buf, "j ")) {
+                                std::string rest = starts_with(line_buf, "j ")
                                     ? line_buf.substr(2)
                                     : line_buf.substr(4);
                                 while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
                                 if(rest.empty()) {
                                     std::cout << "[Mock] Usage: job <job_id>\n";
                                 } else {
-                                    sendControlRpc(
+                                    send_control_rpc(
                                         {
                                             {"type", "getJobInfo"},
                                             {"jobId", rest}
                                         }
                                     );
                                 }
-                            } else if(startsWith(line_buf, "run ") || line_buf == "run") {
+                            } else if(starts_with(line_buf, "run ") || line_buf == "run") {
                                 if(line_buf.size() <= 4) {
                                     std::cerr << "[Mock] Usage: run --test-id <id> --test-dir <dir> --solution <dir>"
-                                        " [--solution <dir2>] [--mode all] [--threads 4] [--memory 1024]\n";
+                                        " [--solution <dir2>] [--threads 4] [--memory 1024]\n";
                                 } else {
-                                    submitRunRabbit(line_buf.substr(4));
+                                    submit_run_rabbit(line_buf.substr(4));
                                 }
                             } else if(line_buf == "rp" || line_buf == "providers") {
-                                sendControlRpc({{"type", "listResourceProviders"}});
+                                send_control_rpc({{"type", "listResourceProviders"}});
                             } else if(line_buf == "rpav") {
-                                sendControlRpc({{"type", "listAvailableResourceProviders"}});
-                            } else if(startsWith(line_buf, "rp-load ")) {
+                                send_control_rpc({{"type", "listAvailableResourceProviders"}});
+                            } else if(starts_with(line_buf, "rp-load ")) {
                                 std::string rest = line_buf.substr(8);
                                 while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
                                 auto sp = rest.find(' ');
@@ -508,7 +508,7 @@ int main(int argc, char** argv) {
                                         std::cerr << "[Mock] Invalid config JSON\n";
                                     }
                                 }
-                                sendControlRpc(
+                                send_control_rpc(
                                     {
                                         {"type", "loadResourceProvider"},
                                         {"provider", name},
@@ -516,13 +516,13 @@ int main(int argc, char** argv) {
                                     },
                                     15000
                                 );
-                            } else if(startsWith(line_buf, "rp-unload ")) {
+                            } else if(starts_with(line_buf, "rp-unload ")) {
                                 std::string rest = line_buf.substr(10);
                                 while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
                                 if(rest.empty()) {
                                     std::cout << "[Mock] Usage: rp-unload <provider_name>\n";
                                 } else {
-                                    sendControlRpc(
+                                    send_control_rpc(
                                         {
                                             {"type", "unloadResourceProvider"},
                                             {"provider", rest}

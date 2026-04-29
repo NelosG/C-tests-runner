@@ -1,0 +1,7 @@
+{
+    "host": "localhost",
+    "port": 8080,
+    "registerUrl": "http://localhost:8080/api/register",
+    "registrationTimeoutSec": 10,
+    "apiKey": "REPLACE"
+}

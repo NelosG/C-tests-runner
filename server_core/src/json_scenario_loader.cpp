@@ -3,7 +3,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
+#include <log_utils.h>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <test.h>
@@ -308,11 +308,11 @@ void JsonScenarioLoader::load(const std::string& test_dir, TestRegistry& registr
             registry.register_test(std::make_unique<JsonScenario>(
                 std::move(scenario_name), type, std::move(defs)));
 
-            std::cout << "[JsonScenarioLoader] Loaded " << it->path().filename()
+            LOG("JsonScenarioLoader") << "Loaded " << it->path().filename().generic_string()
                 << " (" << display_name << ", " << test_count << " tests)\n";
         } catch(const std::exception& e) {
-            std::cerr << "[JsonScenarioLoader] Warning: skipping "
-                << it->path().filename() << ": " << e.what() << "\n";
+            LOG_ERR("JsonScenarioLoader") << "Skipping "
+                << it->path().filename().generic_string() << ": " << e.what() << "\n";
         }
     }
 }

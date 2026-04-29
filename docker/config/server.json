@@ -1,0 +1,23 @@
+{
+    "nodeId": "APLHA-Docker-test",
+    "defaultAdapters": [
+        "http",
+        "rabbit"
+    ],
+    "defaultResourceProviders": [
+        "local", "git"
+    ],
+    "defaultMemoryLimitMb": 1024,
+    "defaultThreads": 4,
+    "defaultWallTimeSec": 60,
+    "defaultCpuTimeSec": 30,
+    "sandbox": {
+        "isolatePath": "/usr/bin/isolate",
+        "maxBoxId": 99,
+        "processMultiplier": 2
+    },
+    "cpuIsolation": {
+        "numaNode": -1,
+        "infraReserve": 1
+    }
+}

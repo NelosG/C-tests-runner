@@ -9,7 +9,6 @@
 #include <config_utils.h>
 #include <filesystem>
 #include <iostream>
-#include <project_utils.h>
 #include <string>
 
 #ifdef _WIN32
@@ -26,7 +25,7 @@ namespace fs = std::filesystem;
 inline std::atomic<bool> g_running{true};
 
 #ifdef _WIN32
-inline BOOL WINAPI consoleHandler(DWORD signal) {
+inline BOOL WINAPI console_handler(DWORD signal) {
     if(signal == CTRL_C_EVENT || signal == CTRL_CLOSE_EVENT) {
         g_running = false;
         return TRUE;
@@ -35,7 +34,7 @@ inline BOOL WINAPI consoleHandler(DWORD signal) {
 }
 #else
 #include <csignal>
-inline void signalHandler(int) { g_running = false; }
+inline void signal_handler(int) { g_running = false; }
 #endif
 
 // ============================================================================
@@ -44,59 +43,77 @@ inline void signalHandler(int) { g_running = false; }
 
 struct common_config {
     fs::path exe_dir;
-    fs::path project_root;
     fs::path config_dir;
     fs::path adapters_dir;
     fs::path providers_dir;
     BuildService::BuildConfig build_config;
 };
 
-inline std::string findLibNearExe(const fs::path& exe_dir, const std::string& name) {
+inline std::string lib_near_exe(const fs::path& exe_dir, const std::string& name) {
     fs::path candidate = exe_dir / name;
-    if(fs::exists(candidate)) return candidate.string();
-    return "";
+    return fs::exists(candidate) ? candidate.string() : "";
 }
 
-inline common_config setupCommon(const fs::path& exe_path) {
+inline common_config setup_common(const fs::path& exe_path) {
     common_config c;
     c.exe_dir = exe_path.parent_path();
-    c.project_root = project::findRoot(exe_path);
-    if(c.project_root.empty()) c.project_root = fs::current_path();
+
+    // Flat layout: libs sit next to the exe; adapters/, resource_providers/, include/, config/
+    // are subdirs of exe_dir. Env vars (ADAPTERS_DIR / PROVIDERS_DIR / CONFIG_DIR / *_LIB_PATH)
+    // override every default below.
+    const fs::path inc = c.exe_dir / "include";
 
     #ifdef _WIN32
-    std::string default_engine_lib = findLibNearExe(c.exe_dir, "libtest_engine.dll");
-    std::string default_parallel_lib = findLibNearExe(c.exe_dir, "libparallel_lib.dll");
+    constexpr const char* lib_ext = ".dll";
     #else
-    std::string default_engine_lib = findLibNearExe(c.exe_dir, "libtest_engine.so");
-    std::string default_parallel_lib = findLibNearExe(c.exe_dir, "libparallel_lib.so");
+    constexpr const char* lib_ext = ".so";
     #endif
 
-    c.build_config.engine_lib_path = config::getEnv("ENGINE_LIB_PATH", default_engine_lib);
-    c.build_config.engine_include_path = config::getEnv(
-        "ENGINE_INCLUDE_PATH",
-        (c.project_root / "test_engine" / "src").string()
-    );
-    c.build_config.parallel_lib_path = config::getEnv("PARALLEL_LIB_PATH", default_parallel_lib);
-    c.build_config.parallel_include_path = config::getEnv(
-        "PARALLEL_INCLUDE_PATH",
-        (c.project_root / "parallel_lib" / "include").string()
-    );
-    c.build_config.cmake_executable = config::getEnv("CMAKE_EXECUTABLE", "cmake");
+    std::string default_engine_lib   = lib_near_exe(c.exe_dir, std::string("libtest_engine") + lib_ext);
+    std::string default_parallel_lib = lib_near_exe(c.exe_dir, std::string("libparallel_lib") + lib_ext);
+
+    c.build_config.engine_lib_path = config::get_env("ENGINE_LIB_PATH", default_engine_lib);
+    c.build_config.engine_include_path = config::get_env(
+        "ENGINE_INCLUDE_PATH", (inc / "test_engine").string());
+    c.build_config.parallel_lib_path = config::get_env("PARALLEL_LIB_PATH", default_parallel_lib);
+    c.build_config.parallel_include_path = config::get_env(
+        "PARALLEL_INCLUDE_PATH", (inc / "parallel_lib").string());
+    c.build_config.cmake_executable = config::get_env("CMAKE_EXECUTABLE", "cmake");
     #ifdef _WIN32
-    c.build_config.generator = config::getEnv("CMAKE_GENERATOR", "MinGW Makefiles");
+    c.build_config.generator = config::get_env("CMAKE_GENERATOR", "MinGW Makefiles");
     #else
-    c.build_config.generator = config::getEnv("CMAKE_GENERATOR", "Ninja");
+    c.build_config.generator = config::get_env("CMAKE_GENERATOR", "Ninja");
     #endif
     c.build_config.exe_dir = c.exe_dir.string();
-    c.build_config.memory_inject_path = (c.project_root / "parallel_lib" / "src" / "memory_limit_inject.cpp").string();
 
-    std::string cw_env = config::getEnv("CORRECTNESS_WORKERS", "");
+    c.build_config.runner_lib_path = config::get_env(
+        "RUNNER_LIB_PATH",          lib_near_exe(c.exe_dir, "librunner_lib.a"));
+    c.build_config.runner_include_path = config::get_env(
+        "RUNNER_INCLUDE_PATH",      (inc / "runner_lib").string());
+    c.build_config.shadow_omp_dir = config::get_env(
+        "SHADOW_OMP_DIR",           (inc / "shadow_omp").string());
+
+    c.build_config.runner_omp_lib_path = config::get_env(
+        "RUNNER_OMP_LIB_PATH",      lib_near_exe(c.exe_dir, "librunner_omp.a"));
+    c.build_config.runner_parlay_lib_path = config::get_env(
+        "RUNNER_PARLAY_LIB_PATH",   lib_near_exe(c.exe_dir, "librunner_parlay.a"));
+    c.build_config.runner_cilk_lib_path = config::get_env(
+        "RUNNER_CILK_LIB_PATH",     lib_near_exe(c.exe_dir, "librunner_cilk.a"));
+    c.build_config.runner_seq_lib_path = config::get_env(
+        "RUNNER_SEQ_LIB_PATH",      lib_near_exe(c.exe_dir, "librunner_seq.a"));
+
+    c.build_config.parlay_headers_path = config::get_env(
+        "PARLAY_HEADERS_PATH",      inc.string());
+    c.build_config.template_dir = config::get_env(
+        "ENGINE_TEMPLATE_DIR",      (c.exe_dir / "cmake").string());
+
+    std::string cw_env = config::get_env("CORRECTNESS_WORKERS", "");
     if(!cw_env.empty()) {
         try { c.build_config.correctness_workers = std::stoi(cw_env); } catch(...) {}
     }
 
-    c.adapters_dir = fs::path(config::getEnv("ADAPTERS_DIR", (c.exe_dir / "adapters").string()));
-    c.providers_dir = fs::path(config::getEnv("PROVIDERS_DIR", (c.exe_dir / "resource_providers").string()));
-    c.config_dir = fs::path(config::getEnv("CONFIG_DIR", (c.project_root / "config").string()));
+    c.adapters_dir = fs::path(config::get_env("ADAPTERS_DIR", (c.exe_dir / "adapters").string()));
+    c.providers_dir = fs::path(config::get_env("PROVIDERS_DIR", (c.exe_dir / "resource_providers").string()));
+    c.config_dir = fs::path(config::get_env("CONFIG_DIR", (c.exe_dir / "config").string()));
     return c;
 }

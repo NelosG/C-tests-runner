@@ -30,7 +30,7 @@
  *
  * Run command:
  *   run --test-id <id> --test-dir <dir> --solution <dir> [--solution <dir2>]
- *       [--mode correctness|performance|all] [--threads N] [--memory MB]
+ *       [--threads N] [--memory MB]
  *
  * Automatically confirms registration requests with {"status":"registered"}.
  * Results are received via PUT /api/results callback (no polling).
@@ -79,7 +79,7 @@ struct MockState {
 
 static MockState g_state;
 
-static void removeNodes(const std::vector<std::string>& dead_ids) {
+static void remove_nodes(const std::vector<std::string>& dead_ids) {
     if(dead_ids.empty()) return;
     std::lock_guard lock(g_state.nodes_mutex);
     for(auto& id : dead_ids) {
@@ -95,7 +95,7 @@ static void removeNodes(const std::vector<std::string>& dead_ids) {
     }
 }
 
-static void listNodes() {
+static void list_nodes() {
     std::lock_guard lock(g_state.nodes_mutex);
     if(g_state.nodes.empty()) {
         std::cout << "[Mock] No nodes registered\n";
@@ -114,7 +114,7 @@ static void listNodes() {
 /// Return true from callback on success (for counting).
 using NodeCallback = std::function<bool(httplib::Client&, const RegisteredNode&)>;
 
-static void forEachNode(
+static void for_each_node(
     const std::string& action_desc,
     NodeCallback callback,
     int connect_timeout = 5,
@@ -151,11 +151,11 @@ static void forEachNode(
             dead.push_back(node.node_id);
         }
     }
-    removeNodes(dead);
+    remove_nodes(dead);
 }
 
 /// Handle common HTTP response patterns: 401 = dead, error = dead, success = parse JSON.
-static bool handleResponse(
+static bool handle_response(
     const httplib::Result& res,
     const std::string& node_id,
     const std::function<void(const nlohmann::json&)>& on_success
@@ -180,12 +180,12 @@ static bool handleResponse(
     return false;
 }
 
-static void pollStatus() {
-    forEachNode(
+static void poll_status() {
+    for_each_node(
         "Polling status",
         [](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Get("/api/node/status");
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -197,12 +197,12 @@ static void pollStatus() {
     );
 }
 
-static void pollQueueStatus() {
-    forEachNode(
+static void poll_queue_status() {
+    for_each_node(
         "Polling queue status",
         [](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Get("/api/status");
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -214,12 +214,12 @@ static void pollQueueStatus() {
     );
 }
 
-static void listAdapters() {
-    forEachNode(
+static void list_adapters() {
+    for_each_node(
         "Listing adapters",
         [](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Get("/api/adapters");
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -231,12 +231,12 @@ static void listAdapters() {
     );
 }
 
-static void listAvailableAdapters() {
-    forEachNode(
+static void list_available_adapters() {
+    for_each_node(
         "Listing available adapters",
         [](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Get("/api/adapters/available");
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -248,14 +248,14 @@ static void listAvailableAdapters() {
     );
 }
 
-static void loadAdapter(const std::string& adapter_name, const std::string& config_json) {
+static void load_adapter(const std::string& adapter_name, const std::string& config_json) {
     std::string body = config_json.empty() ? "{}" : config_json;
     std::string path = "/api/adapters/" + adapter_name;
-    forEachNode(
+    for_each_node(
         "Loading adapter '" + adapter_name + "'",
         [&](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Post(path, body, "application/json");
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -268,13 +268,13 @@ static void loadAdapter(const std::string& adapter_name, const std::string& conf
     );
 }
 
-static void unloadAdapter(const std::string& adapter_name) {
+static void unload_adapter(const std::string& adapter_name) {
     std::string path = "/api/adapters/" + adapter_name;
-    forEachNode(
+    for_each_node(
         "Unloading adapter '" + adapter_name + "'",
         [&](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Delete(path);
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -285,12 +285,12 @@ static void unloadAdapter(const std::string& adapter_name) {
     );
 }
 
-static void listResourceProviders() {
-    forEachNode(
+static void list_resource_providers() {
+    for_each_node(
         "Listing resource providers",
         [](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Get("/api/resource-providers");
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -302,12 +302,12 @@ static void listResourceProviders() {
     );
 }
 
-static void listAvailableResourceProviders() {
-    forEachNode(
+static void list_available_resource_providers() {
+    for_each_node(
         "Listing available resource providers",
         [](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Get("/api/resource-providers/available");
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -319,14 +319,14 @@ static void listAvailableResourceProviders() {
     );
 }
 
-static void loadResourceProvider(const std::string& provider_name, const std::string& config_json) {
+static void load_resource_provider(const std::string& provider_name, const std::string& config_json) {
     std::string body = config_json.empty() ? "{}" : config_json;
     std::string path = "/api/resource-providers/" + provider_name;
-    forEachNode(
+    for_each_node(
         "Loading resource provider '" + provider_name + "'",
         [&](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Post(path, body, "application/json");
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -339,13 +339,13 @@ static void loadResourceProvider(const std::string& provider_name, const std::st
     );
 }
 
-static void unloadResourceProvider(const std::string& provider_name) {
+static void unload_resource_provider(const std::string& provider_name) {
     std::string path = "/api/resource-providers/" + provider_name;
-    forEachNode(
+    for_each_node(
         "Unloading resource provider '" + provider_name + "'",
         [&](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Delete(path);
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -356,13 +356,13 @@ static void unloadResourceProvider(const std::string& provider_name) {
     );
 }
 
-static void cancelJob(const std::string& job_id) {
+static void cancel_job(const std::string& job_id) {
     std::string path = "/api/jobs/" + job_id;
-    forEachNode(
+    for_each_node(
         "Cancelling job '" + job_id + "'",
         [&](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Delete(path);
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -373,13 +373,13 @@ static void cancelJob(const std::string& job_id) {
     );
 }
 
-static void getJobInfo(const std::string& job_id) {
+static void get_job_info(const std::string& job_id) {
     std::string path = "/api/jobs/" + job_id;
-    forEachNode(
+    for_each_node(
         "Querying job '" + job_id + "'",
         [&](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Get(path);
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -390,20 +390,21 @@ static void getJobInfo(const std::string& job_id) {
     );
 }
 
-static void setConfig(const std::string& key, const std::string& value) {
-    nlohmann::json body;
+static void set_config(const std::string& key, const std::string& value) {
+    nlohmann::json patch;
     try {
         int n = std::stoi(value);
-        body[key] = n;
+        patch[key] = n;
     } catch(const std::exception&) {
         std::cout << "[Mock] Invalid value: " << value << "\n";
         return;
     }
-    forEachNode(
+    nlohmann::json body = {{"config", patch}};
+    for_each_node(
         "Setting " + key + "=" + value,
         [&](httplib::Client& client, const RegisteredNode& node) {
             auto res = client.Put("/api/config", body.dump(), "application/json");
-            return handleResponse(
+            return handle_response(
                 res,
                 node.node_id,
                 [&](const nlohmann::json& resp) {
@@ -418,9 +419,9 @@ static void setConfig(const std::string& key, const std::string& value) {
 // Run command - submit test jobs to registered nodes
 // ============================================================================
 
-static void submitRun(const std::string& args_str) {
+static void submit_run(const std::string& args_str) {
     RunArgs args;
-    if(!parseRunArgs(args_str, args)) return;
+    if(!parse_run_args(args_str, args)) return;
 
     std::vector<RegisteredNode> nodes_copy;
     {
@@ -433,15 +434,12 @@ static void submitRun(const std::string& args_str) {
         return;
     }
 
-    std::string lane = (args.mode == "performance" || args.mode == "all")
-        ? "performance"
-        : "correctness";
     std::cout << "\n[Mock] ========== Submitting test run ==========\n"
         << "  test_id:    " << args.test_id << "\n"
         << "  test_dir:   " << args.test_dir << "\n"
-        << "  mode:       " << args.mode << " (lane: " << lane << ")\n"
         << "  threads:    " << args.threads << "\n"
-        << "  memory:     " << (args.memory_limit_mb >= 0 ? std::to_string(args.memory_limit_mb) + " MB" : "default") << "\n"
+        << "  memory:     " << (args.memory_limit_mb >= 0 ? std::to_string(args.memory_limit_mb) + " MB" : "default") <<
+        "\n"
         << "  solutions:  " << args.solutions.size() << "\n";
     for(size_t i = 0; i < args.solutions.size(); ++i) {
         std::cout << "    [" << (i + 1) << "] " << fs::path(args.solutions[i]).filename().string()
@@ -453,7 +451,6 @@ static void submitRun(const std::string& args_str) {
     struct SubmittedJob {
         std::string job_id;
         std::string solution;
-        std::string mode;
     };
     std::vector<SubmittedJob> jobs;
     std::vector<std::string> dead;
@@ -483,7 +480,6 @@ static void submitRun(const std::string& args_str) {
                 {"testSource", {{"path", args.test_dir}}},
                 {"solutionSourceType", "local"},
                 {"solutionSource", {{"path", sol_dir}}},
-                {"mode", args.mode},
                 {"threads", args.threads},
                 {"callbackUrl", "http://localhost:" + std::to_string(g_state.listen_port) + "/api/results"}
             };
@@ -493,7 +489,7 @@ static void submitRun(const std::string& args_str) {
 
             std::string sol_name = fs::path(sol_dir).filename().string();
             std::cout << "[Mock] Submitting: " << sol_name
-                << " | mode=" << args.mode << " | node=" << node.node_id
+                << " | node=" << node.node_id
                 << " | port=" << node.port << "\n";
 
             auto res = client.Post("/api/run", request.dump(), "application/json");
@@ -502,7 +498,7 @@ static void submitRun(const std::string& args_str) {
                 std::string job_id = resp.value("jobId", "");
                 std::cout << "[Mock] -> accepted: job_id=" << job_id << "\n";
 
-                jobs.push_back({job_id, sol_name, args.mode});
+                jobs.push_back({job_id, sol_name});
             } else if(res && res->status == 401) {
                 std::cerr << "[Mock] " << node.node_id << " HTTP 401 (stale token)\n";
                 dead.push_back(node.node_id);
@@ -518,7 +514,7 @@ static void submitRun(const std::string& args_str) {
             std::cerr << "[Mock] " << node.node_id << " error: " << e.what() << "\n";
         }
     }
-    removeNodes(dead);
+    remove_nodes(dead);
 
     if(jobs.empty()) {
         std::cerr << "[Mock] No jobs submitted\n";
@@ -553,12 +549,12 @@ static void submitRun(const std::string& args_str) {
 
                 if(status == "failed") {
                     failed++;
-                    std::cerr << "\n=== " << it->solution << " [" << it->mode
-                        << "] FAILED (job=" << job_id << ") ===\n";
+                    std::cerr << "\n=== " << it->solution
+                        << " FAILED (job=" << job_id << ") ===\n";
                     if(result.contains("error"))
                         std::cerr << "  Error: " << result["error"].get<std::string>() << "\n";
                     if(result.contains("correctness")) {
-                        std::cout << "  Correctness: " << summarizeTests(result["correctness"]) << "\n";
+                        std::cout << "  Correctness: " << summarize_tests(result["correctness"]) << "\n";
                     }
                     if(result.value("performanceSkipped", false)) {
                         std::cout << "  Performance: SKIPPED ("
@@ -567,12 +563,12 @@ static void submitRun(const std::string& args_str) {
                     std::cout << result.dump(2) << "\n";
                 } else {
                     completed++;
-                    std::cout << "\n=== " << it->solution << " [" << it->mode
-                        << "] COMPLETED (job=" << job_id << ") ===\n";
+                    std::cout << "\n=== " << it->solution
+                        << " COMPLETED (job=" << job_id << ") ===\n";
                     if(result.contains("correctness"))
-                        std::cout << "  Correctness: " << summarizeTests(result["correctness"]) << "\n";
+                        std::cout << "  Correctness: " << summarize_tests(result["correctness"]) << "\n";
                     if(result.contains("performance"))
-                        std::cout << "  Performance: " << summarizeTests(result["performance"]) << "\n";
+                        std::cout << "  Performance: " << summarize_tests(result["performance"]) << "\n";
                     std::cout << result.dump(2) << "\n";
                 }
 
@@ -655,7 +651,7 @@ int main(int argc, char** argv) {
                 node.port = port;
                 node.auth_token = auth_token;
                 node.capabilities = body.value("capabilities", nlohmann::json::object());
-                node.registered_at = nowISO8601();
+                node.registered_at = now_iso8601();
 
                 {
                     std::lock_guard lock(g_state.nodes_mutex);
@@ -679,7 +675,7 @@ int main(int argc, char** argv) {
                 nlohmann::json response = {
                     {"status", "registered"},
                     {"nodeId", node_id},
-                    {"timestamp", nowISO8601()}
+                    {"timestamp", now_iso8601()}
                 };
                 res.set_content(response.dump(), "application/json");
             } catch(const std::exception& e) {
@@ -773,53 +769,53 @@ int main(int argc, char** argv) {
             svr.stop();
             break;
         } else if(line == "s" || line == "status") {
-            pollStatus();
+            poll_status();
         } else if(line == "l" || line == "list") {
-            listNodes();
+            list_nodes();
         } else if(line == "a" || line == "adapters") {
-            listAdapters();
+            list_adapters();
         } else if(line == "av" || line == "available") {
-            listAvailableAdapters();
-        } else if(startsWith(line, "a-load ")) {
+            list_available_adapters();
+        } else if(starts_with(line, "a-load ")) {
             std::string rest = line.substr(7);
             while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
             auto space_pos = rest.find(' ');
             if(space_pos == std::string::npos) {
-                loadAdapter(rest, "{}");
+                load_adapter(rest, "{}");
             } else {
                 std::string name = rest.substr(0, space_pos);
                 std::string json = rest.substr(space_pos + 1);
                 while(!json.empty() && json[0] == ' ') json.erase(json.begin());
-                loadAdapter(name, json);
+                load_adapter(name, json);
             }
-        } else if(startsWith(line, "run ") || line == "run") {
+        } else if(starts_with(line, "run ") || line == "run") {
             if(line.size() <= 4) {
                 std::cerr << "[Mock] Usage: run --test-id <id> --test-dir <dir> --solution <dir>"
-                    " [--solution <dir2>] [--mode all] [--threads 4] [--memory 1024]\n";
+                    " [--solution <dir2>] [--threads 4] [--memory 1024]\n";
             } else {
-                submitRun(line.substr(4));
+                submit_run(line.substr(4));
             }
-        } else if(startsWith(line, "a-unload ")) {
+        } else if(starts_with(line, "a-unload ")) {
             std::string rest = line.substr(9);
             while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
             if(rest.empty()) {
                 std::cout << "[Mock] Usage: a-unload <adapter_name>\n";
             } else {
-                unloadAdapter(rest);
+                unload_adapter(rest);
             }
-        } else if(startsWith(line, "cancel ") || startsWith(line, "c ")) {
-            std::string rest = startsWith(line, "c ")
+        } else if(starts_with(line, "cancel ") || starts_with(line, "c ")) {
+            std::string rest = starts_with(line, "c ")
                 ? line.substr(2)
                 : line.substr(7);
             while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
             if(rest.empty()) {
                 std::cout << "[Mock] Usage: cancel <job_id>\n";
             } else {
-                cancelJob(rest);
+                cancel_job(rest);
             }
         } else if(line == "qs" || line == "queue") {
-            pollQueueStatus();
-        } else if(startsWith(line, "config ")) {
+            poll_queue_status();
+        } else if(starts_with(line, "config ")) {
             std::string rest = line.substr(7);
             while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
             auto space_pos = rest.find(' ');
@@ -829,41 +825,41 @@ int main(int argc, char** argv) {
                 std::string key = rest.substr(0, space_pos);
                 std::string val = rest.substr(space_pos + 1);
                 while(!val.empty() && val[0] == ' ') val.erase(val.begin());
-                setConfig(key, val);
+                set_config(key, val);
             }
-        } else if(startsWith(line, "job ") || startsWith(line, "j ")) {
-            std::string rest = startsWith(line, "j ")
+        } else if(starts_with(line, "job ") || starts_with(line, "j ")) {
+            std::string rest = starts_with(line, "j ")
                 ? line.substr(2)
                 : line.substr(4);
             while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
             if(rest.empty()) {
                 std::cout << "[Mock] Usage: job <job_id>\n";
             } else {
-                getJobInfo(rest);
+                get_job_info(rest);
             }
         } else if(line == "rp" || line == "providers") {
-            listResourceProviders();
+            list_resource_providers();
         } else if(line == "rpav") {
-            listAvailableResourceProviders();
-        } else if(startsWith(line, "rp-load ")) {
+            list_available_resource_providers();
+        } else if(starts_with(line, "rp-load ")) {
             std::string rest = line.substr(8);
             while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
             auto space_pos = rest.find(' ');
             if(space_pos == std::string::npos) {
-                loadResourceProvider(rest, "{}");
+                load_resource_provider(rest, "{}");
             } else {
                 std::string name = rest.substr(0, space_pos);
                 std::string json_cfg = rest.substr(space_pos + 1);
                 while(!json_cfg.empty() && json_cfg[0] == ' ') json_cfg.erase(json_cfg.begin());
-                loadResourceProvider(name, json_cfg);
+                load_resource_provider(name, json_cfg);
             }
-        } else if(startsWith(line, "rp-unload ")) {
+        } else if(starts_with(line, "rp-unload ")) {
             std::string rest = line.substr(10);
             while(!rest.empty() && rest[0] == ' ') rest.erase(rest.begin());
             if(rest.empty()) {
                 std::cout << "[Mock] Usage: rp-unload <provider_name>\n";
             } else {
-                unloadResourceProvider(rest);
+                unload_resource_provider(rest);
             }
         } else {
             std::cout << "[Mock] Unknown command: '" << line

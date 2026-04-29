@@ -1,5 +1,6 @@
 #include "sandbox_launcher.h"
 #include "process_utils.h"
+#include "log_utils.h"
 
 #include <cstring>
 #include <fstream>
@@ -56,8 +57,8 @@ SandboxLauncher::execute(
     if (monitor_mode == "stress" || monitor_mode == "monitor" || monitor_mode == "normal") {
         safe_mode = monitor_mode;
     } else {
-        std::cerr << "[sandbox] Warning: unknown monitor-mode '" << monitor_mode
-                  << "', defaulting to 'normal'\n";
+        LOG_ERR("SandboxLauncher") << "Unknown monitor-mode '" << monitor_mode
+                                   << "', defaulting to 'normal'\n";
     }
 
     // Build runner argument string (shell-quoted to prevent injection)
@@ -74,6 +75,8 @@ SandboxLauncher::execute(
     int box_id = acquire_box_id();
     if (box_id < 0) {
         result.stderr_output = "No sandbox box IDs available";
+        LOG_ERR("SandboxLauncher") << "No sandbox box IDs available (all "
+                                   << config_.max_box_id << " in use)\n";
         return {result, std::nullopt};
     }
     try {
@@ -97,7 +100,7 @@ SandboxLauncher::execute(
             char buf[META_SIZE] = {};
             f.read(buf, META_SIZE);
             if(f.gcount() != META_SIZE) {
-                std::cerr << "[sandbox] Warning: meta.bin truncated ("
+                LOG_ERR("SandboxLauncher") << "meta.bin truncated ("
                     << f.gcount() << "/" << META_SIZE << " bytes)\n";
                 // Don't set output_json - treat as missing
             } else {
@@ -133,7 +136,7 @@ SandboxLauncher::execute(
             output_json = std::move(j);
             } // else (META_SIZE bytes read)
         } catch(const std::exception& e) {
-            std::cerr << "[sandbox] Warning: failed to read meta.bin: " << e.what() << "\n";
+            LOG_ERR("SandboxLauncher") << "Failed to read meta.bin: " << e.what() << "\n";
         }
     }
 
@@ -185,7 +188,9 @@ SandboxLauncher::RunResult SandboxLauncher::launch_windows(
     // --- Create Job Object with resource limits ---
     HANDLE job = CreateJobObjectA(nullptr, nullptr);
     if (!job) {
-        result.stderr_output = "Failed to create Job Object: " + std::to_string(GetLastError());
+        DWORD err = GetLastError();
+        result.stderr_output = "Failed to create Job Object: " + std::to_string(err);
+        LOG_ERR("SandboxLauncher") << "CreateJobObjectA failed (GetLastError=" << err << ")\n";
         return result;
     }
 
@@ -226,7 +231,9 @@ SandboxLauncher::RunResult SandboxLauncher::launch_windows(
     HANDLE stderr_read = nullptr;
     HANDLE stderr_write = nullptr;
     if(!CreatePipe(&stderr_read, &stderr_write, &sa, 0)) {
-        result.stderr_output = "Failed to create stderr pipe: " + std::to_string(GetLastError());
+        DWORD err = GetLastError();
+        result.stderr_output = "Failed to create stderr pipe: " + std::to_string(err);
+        LOG_ERR("SandboxLauncher") << "CreatePipe(stderr) failed (GetLastError=" << err << ")\n";
         CloseHandle(job);
         return result;
     }
@@ -264,7 +271,10 @@ SandboxLauncher::RunResult SandboxLauncher::launch_windows(
     stderr_write = nullptr;
 
     if (!created) {
-        result.stderr_output = "CreateProcess failed: " + std::to_string(GetLastError());
+        DWORD err = GetLastError();
+        result.stderr_output = "CreateProcess failed: " + std::to_string(err);
+        LOG_ERR("SandboxLauncher") << "CreateProcessA failed for '" << runner_exe
+                                   << "' (GetLastError=" << err << ")\n";
         CloseHandle(stderr_read);
         if (h_nul != INVALID_HANDLE_VALUE) CloseHandle(h_nul);
         CloseHandle(job);
@@ -401,6 +411,10 @@ SandboxLauncher::RunResult SandboxLauncher::launch_isolate(
     auto init_result = run_command(init_cmd);
     if (init_result.failed()) {
         result.stderr_output = "isolate --init failed: " + init_result.output;
+        LOG_ERR("SandboxLauncher") << "isolate --init failed (box-id=" << box_id_str
+                                   << ", exit=" << init_result.exit_code
+                                   << ", path=" << config_.isolate_path << "): "
+                                   << init_result.output;
         return result;
     }
 
@@ -478,7 +492,12 @@ SandboxLauncher::RunResult SandboxLauncher::launch_isolate(
 
     // 9. Cleanup sandbox
     std::string cleanup_cmd = shell_quote(config_.isolate_path) + " --cleanup --box-id=" + box_id_str + " --cg 2>&1";
-    run_command(cleanup_cmd);
+    auto cleanup_result = run_command(cleanup_cmd);
+    if (cleanup_result.failed()) {
+        LOG_ERR("SandboxLauncher") << "isolate --cleanup failed (box-id=" << box_id_str
+                                   << ", exit=" << cleanup_result.exit_code << "): "
+                                   << cleanup_result.output;
+    }
 
     return result;
 }
@@ -522,7 +541,7 @@ SandboxLauncher::RunResult SandboxLauncher::parse_meta_file(const fs::path& meta
                 }
             }
         } catch (const std::exception& e) {
-            std::cerr << "[SandboxLauncher] Malformed meta-file line ('"
+            LOG_ERR("SandboxLauncher") << "Malformed meta-file line ('"
                 << key << "'): " << e.what() << " - skipping field\n";
         }
     }

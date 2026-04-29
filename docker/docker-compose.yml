@@ -1,0 +1,20 @@
+services:
+  engine:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: c-tests-runner
+    environment:
+      - NODE_ID=docker-node
+    ports:
+      - "8090:8080"
+    # isolate needs CAP_SYS_ADMIN to create namespaces and write cgroup limits.
+    # cgroup: host gives access to host's cgroup v2 hierarchy.
+    privileged: true
+    cgroup: host
+    volumes:
+      - ./config:/opt/ctr/config
+      - ./data/git-cache:/data/cache/git
+      - ./data/solutions:/data/solutions
+      - ./data/tests:/data/tests
+    restart: unless-stopped

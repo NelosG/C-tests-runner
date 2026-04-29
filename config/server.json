@@ -1,7 +1,0 @@
-{
-    "nodeId": "APLHA-test",
-    "defaultAdapters": [
-        "http",
-        "rabbit"
-    ]
-}

@@ -1,10 +1,4 @@
 # ============================================
-# Integration test - full pipeline without HTTP
-# ============================================
-add_executable(test_server_pipeline src/test_server_pipeline.cpp)
-target_link_libraries(test_server_pipeline PRIVATE server_core parallel_lib)
-
-# ============================================
 # RabbitMQ client mock - orchestrator stub for RabbitMQ adapter
 # ============================================
 add_executable(rabbit_client_mock src/rabbit_client_mock.cpp)
@@ -27,12 +21,15 @@ target_include_directories(http_client_mock PRIVATE
 )
 target_link_libraries(http_client_mock PRIVATE httplib::httplib nlohmann_json::nlohmann_json)
 
-# ============================================
-# RPATH for Linux
-# ============================================
+# Mocks are dev-only utilities (orchestrator stubs for adapter testing).
+# They live next to the engine binaries but in a tools/ subfolder so they
+# don't clutter OUTPUT_DIR's runtime layout.
+set_target_properties(rabbit_client_mock http_client_mock PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_DIR}/tools)
+
 if(UNIX)
-    set_target_properties(run test_server_pipeline PROPERTIES
-            BUILD_RPATH "${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}"
-            INSTALL_RPATH "$ORIGIN/../lib"
+    set_target_properties(rabbit_client_mock http_client_mock PROPERTIES
+            BUILD_RPATH "${OUTPUT_DIR}"
+            INSTALL_RPATH "$ORIGIN/.."
     )
 endif()

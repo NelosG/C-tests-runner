@@ -14,6 +14,7 @@
  *            NUMA memory binding is best-effort on Windows.
  */
 
+#include <set>
 #include <vector>
 
 
@@ -23,17 +24,29 @@ namespace numa {
  * @brief Describes the system's NUMA topology.
  */
     struct TopologyInfo {
-        int node_count = 0;                             ///< Number of NUMA nodes.
-        std::vector<std::vector<int>> cores_per_node;   ///< Physical core IDs per NUMA node.
+        int node_count = 0;                              ///< Number of NUMA nodes.
+        std::vector<std::vector<int>> cores_per_node;    ///< Physical core IDs per NUMA node.
+        /// Physical core IDs per L3 cache (empty when topology source
+        /// doesn't expose cache levels - sysfs/libnuma fallback). When
+        /// populated, CpuIsolator prefers picking cores from a single L3
+        /// to keep cache traffic local; falls back to single-NUMA, then
+        /// spanning. Each entry is a subset of some cores_per_node[k].
+        std::vector<std::vector<int>> cores_per_l3;
     };
 
     /**
  * @brief Discover the system's NUMA topology.
+ * @param allowed_cpus Optional kernel-allowed cpuset (from sched_getaffinity).
+ *                     When provided, SMT representatives are chosen as the
+ *                     lowest sibling that is also in this set - so an SMT
+ *                     pair (2,3) where the kernel only allows cpu 3 yields 3
+ *                     instead of being dropped. Empty / nullptr = legacy
+ *                     behaviour (pick the absolute lowest sibling).
  * @return TopologyInfo with node count and cores-per-node mapping.
  *
  * On single-socket systems, returns one node containing all cores.
  */
-    TopologyInfo discover();
+    TopologyInfo discover(const std::set<int>& allowed_cpus = {});
 
     /**
  * @brief Pin the current process/thread to cores of the given NUMA node.

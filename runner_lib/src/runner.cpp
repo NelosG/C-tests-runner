@@ -10,8 +10,8 @@ namespace runner {
     static RunnerConfig config_;
     static bool initialized_ = false;
 
-    static std::chrono::high_resolution_clock::time_point execute_start_;
-    static std::chrono::high_resolution_clock::time_point execute_end_;
+    static std::chrono::steady_clock::time_point execute_start_;
+    static std::chrono::steady_clock::time_point execute_end_;
 
     static finish_hook_t finish_hook_;
     static TestData input_data_;
@@ -56,17 +56,23 @@ namespace runner {
     }
 
     void begin_execute() {
-        execute_start_ = std::chrono::high_resolution_clock::now();
+        execute_start_ = std::chrono::steady_clock::now();
     }
 
     void end_execute() {
-        execute_end_ = std::chrono::high_resolution_clock::now();
+        execute_end_ = std::chrono::steady_clock::now();
     }
 
     double execute_time_ms() {
         auto us = std::chrono::duration_cast<std::chrono::microseconds>(
             execute_end_ - execute_start_).count();
         return static_cast<double>(us) / 1000.0;
+    }
+
+    void next_pass(int& pass) {
+        ++pass;
+        if(pass == 1) begin_execute();      // warmup done -> start timer
+        else if(pass == 2) end_execute();   // timed done   -> stop timer
     }
 
     void set_finish_hook(finish_hook_t hook) {

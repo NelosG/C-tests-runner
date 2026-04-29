@@ -163,6 +163,23 @@ std::vector<TestScenarioResult> SandboxTestExecutor::run(
                 auto [run_result, timing_json] = sandbox_.execute(
                     runner_exe, input_dir, output_dir, tc, monitor_mode, job_config);
 
+                // Surface non-zero / sandbox-side failures in the engine log so
+                // operators can see what went wrong without grepping per-test
+                // stderrOutput in the JSON result.
+                if(run_result.timed_out || run_result.oom_killed
+                   || run_result.exit_code != 0) {
+                    LOG_ERR("SandboxTestExecutor")
+                        << scenario->name() << "::" << test.name
+                        << " (t=" << tc << ") sandbox returned "
+                        << (run_result.timed_out  ? "timeout"
+                          : run_result.oom_killed ? "oom"
+                          : "exit=" + std::to_string(run_result.exit_code))
+                        << (run_result.stderr_output.empty()
+                              ? std::string{}
+                              : "; stderr=" + run_result.stderr_output)
+                        << "\n";
+                }
+
                 auto built = build_test_result(test, run_result, timing_json,
                                               input.data, output_dir);
                 emit_test(scenario->name(), test.name, tc,

@@ -1,15 +1,13 @@
 #include "cpu_isolator.h"
 #include "numa_utils.h"
+#include "log_utils.h"
 
 #include <algorithm>
 #include <iostream>
-#include <numeric>
 #include <sstream>
 
 #ifndef _WIN32
-#include <fstream>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <sched.h>
 #endif
 
 // ---------------------------------------------------------------------------
@@ -17,19 +15,19 @@
 // ---------------------------------------------------------------------------
 
 std::string CpuIsolator::format_cores(const std::vector<int>& cores) {
-    if (cores.empty()) return "";
+    if(cores.empty()) return "";
     std::vector<int> sorted = cores;
     std::sort(sorted.begin(), sorted.end());
 
     std::ostringstream ss;
     size_t i = 0;
     bool first = true;
-    while (i < sorted.size()) {
+    while(i < sorted.size()) {
         size_t start = i;
-        while (i + 1 < sorted.size() && sorted[i + 1] == sorted[i] + 1) ++i;
-        if (!first) ss << ",";
+        while(i + 1 < sorted.size() && sorted[i + 1] == sorted[i] + 1) ++i;
+        if(!first) ss << ",";
         first = false;
-        if (i == start) {
+        if(i == start) {
             ss << sorted[start];
         } else {
             ss << sorted[start] << "-" << sorted[i];
@@ -41,15 +39,15 @@ std::string CpuIsolator::format_cores(const std::vector<int>& cores) {
 
 std::vector<int> CpuIsolator::parse_cores(const std::string& str) {
     std::vector<int> result;
-    if (str.empty()) return result;
+    if(str.empty()) return result;
     std::istringstream ss(str);
     std::string token;
-    while (std::getline(ss, token, ',')) {
+    while(std::getline(ss, token, ',')) {
         auto dash = token.find('-');
-        if (dash != std::string::npos) {
+        if(dash != std::string::npos) {
             int lo = std::stoi(token.substr(0, dash));
             int hi = std::stoi(token.substr(dash + 1));
-            for (int i = lo; i <= hi; ++i) result.push_back(i);
+            for(int i = lo; i <= hi; ++i) result.push_back(i);
         } else {
             result.push_back(std::stoi(token));
         }
@@ -62,63 +60,104 @@ std::vector<int> CpuIsolator::parse_cores(const std::string& str) {
 // ---------------------------------------------------------------------------
 
 CpuIsolator::CpuIsolator(Config config) : config_(config) {
-    auto topo = numa::discover();
+    // Discover which CPUs the kernel actually permits this process to use.
+    // sched_getaffinity reflects all combined constraints (cgroup v1/v2
+    // cpuset, isolcpus=, taskset, namespace restrictions). Same single
+    // source of truth on bare-metal and inside containers - Docker Desktop
+    // / WSL2 typically returns a sparse subset like {0,1,3,5,7,...}.
+    // numa::discover() uses this to pick SMT representatives that the
+    // kernel will actually accept for sched_setaffinity().
+    std::set<int> effective_cores;
+    #ifndef _WIN32
+    {
+        cpu_set_t mask;
+        CPU_ZERO(&mask);
+        if(sched_getaffinity(0, sizeof(mask), &mask) == 0) {
+            for(int i = 0; i < CPU_SETSIZE; ++i) {
+                if(CPU_ISSET(i, &mask)) effective_cores.insert(i);
+            }
+        }
+    }
+    #endif
+
+    auto topo = numa::discover(effective_cores);
     nodes_ = topo.cores_per_node;
-    for (auto& node_cores : nodes_) {
+    l3_ = topo.cores_per_l3;
+    for(auto& node_cores : nodes_) {
         system_cores_ += static_cast<int>(node_cores.size());
-    }
-
-    if (system_cores_ == 0) {
-        system_cores_ = 1;
-        nodes_.push_back({0});
-    }
-
-    // Pool strategy:
-    //
-    // partition=true:
-    //   Reserve core 0 (node 0) for OS. All other cores available for tests.
-    //   Allocate() prefers non-OS NUMA nodes, spills to node 0 when needed.
-    //
-    // partition=false:
-    //   All cores available (no exclusivity, OS shares freely).
-
-    // Add all cores from all nodes
-    for (auto& node_cores : nodes_) {
-        for (int core : node_cores) {
+        for(int core : node_cores) {
             available_.insert(core);
         }
     }
 
-    if (config_.enable_partition) {
-        os_node_ = 0;
-        // Reserve core 0 for OS - always on node 0
-        available_.erase(0);
-
-        std::cerr << "[cpu_isolator] Partition: reserved core 0 (node 0) for OS, "
-                  << available_.size() << " cores available for tests\n";
-    } else {
-        std::cerr << "[cpu_isolator] No partition: all " << available_.size()
-                  << " cores available (shared with OS)\n";
+    if(system_cores_ == 0) {
+        system_cores_ = 1;
+        nodes_.push_back({0});
+        available_.insert(0);
     }
 
-    std::cerr << "[cpu_isolator] System: " << system_cores_ << " cores, "
-              << nodes_.size() << " NUMA node(s)\n";
-
-#ifndef _WIN32
-    if (config_.enable_partition) {
-        setup_cgroup();
+    if(!effective_cores.empty()) {
+        LOG("CpuIsolator") << "Kernel-allowed cpuset: "
+            << format_cores(
+                std::vector<int>(
+                    effective_cores.begin(),
+                    effective_cores.end()
+                )
+            )
+            << " (" << effective_cores.size() << " cores)\n";
     }
-#endif
-}
 
-// ---------------------------------------------------------------------------
-// Destructor
-// ---------------------------------------------------------------------------
+    // Reserve the lowest-indexed `infra_reserve` cores for engine infrastructure
+    // (server, adapters, git/cmake subprocesses). Keeps hot tests off the
+    // CPUs that the engine itself competes for, regardless of how many
+    // service threads we end up running.
+    std::vector<int> infra_cpus;
+    for(int taken = 0; taken < config_.infra_reserve && !available_.empty(); ++taken) {
+        int low = *available_.begin();
+        available_.erase(low);
+        infra_cpus.push_back(low);
+        for(auto& node_cores : nodes_) {
+            node_cores.erase(
+                std::remove(node_cores.begin(), node_cores.end(), low),
+                node_cores.end()
+            );
+        }
+    }
+    if(!infra_cpus.empty()) {
+        LOG("CpuIsolator") << "Reserved " << infra_cpus.size()
+            << " cpu(s) for infrastructure: " << format_cores(infra_cpus) << "\n";
+    }
 
-CpuIsolator::~CpuIsolator() {
-#ifndef _WIN32
-    teardown_cgroup();
-#endif
+    // Drop infra-reserved CPUs from L3 groups as well, then drop empty groups
+    // so the L3-aware path in allocate() doesn't waste time on them.
+    if(!l3_.empty()) {
+        std::set<int> infra_set(infra_cpus.begin(), infra_cpus.end());
+        for(auto& g : l3_) {
+            g.erase(
+                std::remove_if(
+                    g.begin(),
+                    g.end(),
+                    [&](int c) { return infra_set.count(c) > 0; }
+                ),
+                g.end()
+            );
+        }
+        l3_.erase(
+            std::remove_if(
+                l3_.begin(),
+                l3_.end(),
+                [](const std::vector<int>& g) { return g.empty(); }
+            ),
+            l3_.end()
+        );
+    }
+
+    LOG("CpuIsolator") << "Test pool: " << available_.size()
+        << " cores across " << nodes_.size() << " NUMA node(s)";
+    if(!l3_.empty()) {
+        std::cout << ", " << l3_.size() << " L3 group(s)";
+    }
+    std::cout << "\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -126,111 +165,133 @@ CpuIsolator::~CpuIsolator() {
 // ---------------------------------------------------------------------------
 
 std::string CpuIsolator::allocate(int num_cores) {
-    if (num_cores <= 0) return "";
+    if(num_cores <= 0) return "";
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // Check total available
-    if (static_cast<int>(available_.size()) < num_cores) {
-        std::cerr << "[cpu_isolator] Warning: requested " << num_cores
-                  << " cores but only " << available_.size() << " available\n";
-        if (available_.empty()) return "";
+    if(static_cast<int>(available_.size()) < num_cores) {
+        LOG_ERR("CpuIsolator") << "Requested " << num_cores
+            << " cores but only " << available_.size() << " available\n";
+        if(available_.empty()) return "";
         num_cores = static_cast<int>(available_.size());
     }
 
-    // Determine preferred NUMA node:
-    // - Explicit numaNode from config takes priority
-    // - Multi-node: prefer first non-OS node
-    // - Single node: use node 0
-    int preferred_node;
-    if (config_.numa_node >= 0) {
+    // Pick a preferred NUMA node:
+    //   - Explicit `numa_node` from config - respect it (throws below if it
+    //     can't fit, rather than silently spilling).
+    //   - Auto: choose the node with the most currently-free cores - gives
+    //     us the best chance of single-node allocation (no cross-NUMA
+    //     memory penalty).
+    int preferred_node = 0;
+    if(config_.numa_node >= 0) {
         preferred_node = config_.numa_node;
-    } else if (nodes_.size() > 1) {
-        // Pick first non-OS node
-        preferred_node = (os_node_ == 0) ? 1 : 0;
+        if(preferred_node >= static_cast<int>(nodes_.size())) {
+            throw std::runtime_error(
+                "[cpu_isolator] NUMA node " + std::to_string(preferred_node)
+                + " does not exist (system has " + std::to_string(nodes_.size()) + " nodes)"
+            );
+        }
     } else {
-        preferred_node = 0;
-    }
-    if (preferred_node >= static_cast<int>(nodes_.size())) {
-        throw std::runtime_error(
-            "[cpu_isolator] NUMA node " + std::to_string(preferred_node)
-            + " does not exist (system has " + std::to_string(nodes_.size()) + " nodes)");
+        int best_count = -1;
+        for(int n = 0; n < static_cast<int>(nodes_.size()); ++n) {
+            int count = 0;
+            for(int core : nodes_[n]) {
+                if(available_.count(core)) ++count;
+            }
+            if(count > best_count) {
+                best_count = count;
+                preferred_node = n;
+            }
+        }
     }
 
-    // Try to allocate all from preferred NUMA node
     std::vector<int> allocated;
-    std::vector<int> node_available;
-    for (int core : nodes_[preferred_node]) {
-        if (available_.count(core)) node_available.push_back(core);
+
+    // Pass 0 (preferred - only when topology source exposes L3 groups, e.g.
+    // hwloc): try to pick all `num_cores` from a single L3 cache.
+    // This wins us cache locality - threads sharing an L3 see each other's
+    // writes through the same last-level cache instead of bouncing through
+    // memory. Constraint: the L3 group must belong to the preferred NUMA
+    // node (otherwise we'd silently violate an explicit numa_node setting).
+    if(!l3_.empty()) {
+        const auto& numa_cores = nodes_[preferred_node];
+        std::set<int> numa_set(numa_cores.begin(), numa_cores.end());
+        for(const auto& l3_group : l3_) {
+            // Is this L3 group inside our preferred NUMA node?
+            bool inside_numa = !l3_group.empty();
+            for(int c : l3_group) {
+                if(!numa_set.count(c)) {
+                    inside_numa = false;
+                    break;
+                }
+            }
+            if(!inside_numa) continue;
+            std::vector<int> l3_free;
+            for(int c : l3_group) {
+                if(available_.count(c)) l3_free.push_back(c);
+            }
+            if(static_cast<int>(l3_free.size()) >= num_cores) {
+                allocated.assign(l3_free.begin(), l3_free.begin() + num_cores);
+                break;
+            }
+        }
     }
 
-    if (static_cast<int>(node_available.size()) >= num_cores) {
-        // All fit on preferred node
+    // Pass 1: take all from the preferred NUMA node.
+    std::vector<int> node_available;
+    for(int core : nodes_[preferred_node]) {
+        if(available_.count(core)) node_available.push_back(core);
+    }
+
+    if(!allocated.empty()) {
+        // already filled by L3 pass - done
+    } else if(static_cast<int>(node_available.size()) >= num_cores) {
         allocated.assign(node_available.begin(), node_available.begin() + num_cores);
     } else {
-        // Not enough on preferred node
-        if (config_.numa_node >= 0) {
-            // Explicit node requested - error
+        // Preferred node insufficient.
+        if(config_.numa_node >= 0) {
+            // User asked for a specific node - respect it, fail rather than spill.
             throw std::runtime_error(
                 "[cpu_isolator] Requested " + std::to_string(num_cores)
                 + " cores on NUMA node " + std::to_string(preferred_node)
-                + " but only " + std::to_string(node_available.size()) + " available");
+                + " but only " + std::to_string(node_available.size()) + " available"
+            );
         }
 
-        // Try to find another single node that can fit all cores.
-        // Priority: non-OS nodes first, then OS node.
+        // Pass 2: any other single node that fits the whole request?
         int best_node = -1;
-
-        for (int n = 0; n < static_cast<int>(nodes_.size()); ++n) {
-            if (n == preferred_node) continue;
-            if (config_.enable_partition && n == os_node_) continue;
+        for(int n = 0; n < static_cast<int>(nodes_.size()); ++n) {
+            if(n == preferred_node) continue;
             int count = 0;
-            for (int core : nodes_[n]) {
-                if (available_.count(core)) ++count;
+            for(int core : nodes_[n]) {
+                if(available_.count(core)) ++count;
             }
-            if (count >= num_cores) { best_node = n; break; }
+            if(count >= num_cores) {
+                best_node = n;
+                break;
+            }
         }
 
-        if (best_node < 0 && config_.enable_partition && os_node_ != preferred_node) {
-            int count = 0;
-            for (int core : nodes_[os_node_]) {
-                if (available_.count(core)) ++count;
-            }
-            if (count >= num_cores) best_node = os_node_;
-        }
-
-        if (best_node >= 0) {
-            // Found a single node that fits all - no cross-NUMA penalty
-            for (int core : nodes_[best_node]) {
-                if (static_cast<int>(allocated.size()) >= num_cores) break;
-                if (available_.count(core)) allocated.push_back(core);
+        if(best_node >= 0) {
+            // Single non-preferred node fits - no cross-NUMA penalty.
+            for(int core : nodes_[best_node]) {
+                if(static_cast<int>(allocated.size()) >= num_cores) break;
+                if(available_.count(core)) allocated.push_back(core);
             }
         } else {
-            // No single node fits - split across nodes (preferred first, then others)
-            std::cerr << "[cpu_isolator] Warning: " << num_cores
-                      << " cores don't fit on any single NUMA node, spanning multiple nodes\n";
+            // Pass 3: span multiple nodes. Cross-NUMA memory penalty applies -
+            // warn so perf-measurement results are interpreted accordingly.
+            LOG_ERR("CpuIsolator") << "Warning: " << num_cores
+                << " cores don't fit on any single NUMA node - spanning multiple "
+                << "(cross-NUMA memory penalty applies)\n";
 
             allocated = node_available;
             int remaining = num_cores - static_cast<int>(allocated.size());
-
-            // Fill from non-OS nodes first (skip preferred - already taken)
-            for (int n = 0; n < static_cast<int>(nodes_.size()) && remaining > 0; ++n) {
-                if (n == preferred_node) continue;
-                if (config_.enable_partition && n == os_node_) continue;
-                for (int core : nodes_[n]) {
-                    if (remaining <= 0) break;
-                    if (available_.count(core)) {
-                        allocated.push_back(core);
-                        --remaining;
-                    }
-                }
-            }
-
-            // Finally spill to OS node if still needed
-            if (remaining > 0 && config_.enable_partition && os_node_ != preferred_node) {
-                for (int core : nodes_[os_node_]) {
-                    if (remaining <= 0) break;
-                    if (available_.count(core)) {
+            for(int n = 0; n < static_cast<int>(nodes_.size()) && remaining > 0; ++n) {
+                if(n == preferred_node) continue;
+                for(int core : nodes_[n]) {
+                    if(remaining <= 0) break;
+                    if(available_.count(core)) {
                         allocated.push_back(core);
                         --remaining;
                     }
@@ -239,15 +300,12 @@ std::string CpuIsolator::allocate(int num_cores) {
         }
     }
 
-    // Remove allocated from pool
-    for (int core : allocated) {
+    for(int core : allocated) {
         available_.erase(core);
     }
 
     std::sort(allocated.begin(), allocated.end());
-    std::string result = format_cores(allocated);
-
-    return result;
+    return format_cores(allocated);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,11 +313,11 @@ std::string CpuIsolator::allocate(int num_cores) {
 // ---------------------------------------------------------------------------
 
 void CpuIsolator::release(const std::string& cores_str) {
-    if (cores_str.empty()) return;
+    if(cores_str.empty()) return;
     auto cores = parse_cores(cores_str);
 
     std::lock_guard<std::mutex> lock(mutex_);
-    for (int core : cores) {
+    for(int core : cores) {
         available_.insert(core);
     }
 }
@@ -271,67 +329,3 @@ void CpuIsolator::release(const std::string& cores_str) {
 int CpuIsolator::system_cores() const {
     return system_cores_;
 }
-
-// ---------------------------------------------------------------------------
-// Linux cgroup management
-// ---------------------------------------------------------------------------
-
-#ifndef _WIN32
-
-static void write_file(const std::string& path, const std::string& content) {
-    std::ofstream f(path);
-    if (f.is_open()) {
-        f << content;
-    }
-}
-
-void CpuIsolator::setup_cgroup() {
-    cgroup_path_ = "/sys/fs/cgroup/test-runner";
-
-    mkdir(cgroup_path_.c_str(), 0755);
-
-    // Write all test-available cores to the cgroup
-    std::vector<int> cores(available_.begin(), available_.end());
-    write_file(cgroup_path_ + "/cpuset.cpus", format_cores(cores));
-
-    // Determine which NUMA nodes contain our test cores
-    std::set<int> core_set(cores.begin(), cores.end());
-    std::vector<int> mems;
-    for (int n = 0; n < static_cast<int>(nodes_.size()); ++n) {
-        for (int c : nodes_[n]) {
-            if (core_set.count(c)) {
-                mems.push_back(n);
-                break;
-            }
-        }
-    }
-    write_file(cgroup_path_ + "/cpuset.mems", mems.empty() ? "0" : format_cores(mems));
-
-    // Try partition isolation (may fail on older kernels)
-    std::ofstream part(cgroup_path_ + "/cpuset.cpus.partition");
-    if (part.is_open()) {
-        part << "isolated";
-        if (part.fail()) {
-            std::cerr << "[cpu_isolator] Warning: failed to set cpuset.cpus.partition=isolated"
-                      << " (may require newer kernel or root privileges)\n";
-        }
-        part.close();
-    }
-}
-
-void CpuIsolator::teardown_cgroup() {
-    if (cgroup_path_.empty()) return;
-
-    std::ofstream part(cgroup_path_ + "/cpuset.cpus.partition");
-    if (part.is_open()) {
-        part << "member";
-        part.close();
-    }
-
-    if (rmdir(cgroup_path_.c_str()) != 0) {
-        // Silently ignore - may still have processes
-    }
-    cgroup_path_.clear();
-}
-
-#endif

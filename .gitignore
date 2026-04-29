@@ -4,12 +4,13 @@ target/
 !**/src/test/**/target/
 cmake-build-*
 output-*
-cache/
+/cache/*
 result/
 .kotlin
 delivery/
 *.log
 *.gz
+/docker/data/*
 
 ### IntelliJ IDEA ###
 .idea/*

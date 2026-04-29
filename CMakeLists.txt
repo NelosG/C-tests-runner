@@ -17,13 +17,26 @@ project(c-test-runner C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Output directories (.dll -> RUNTIME, .dll.a/.lib -> ARCHIVE, .so -> LIBRARY)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE})
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE})
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE})
+# Platform suffix: windows / linux / darwin
+if(WIN32)
+    set(PLATFORM_SUFFIX "windows")
+else()
+    set(PLATFORM_SUFFIX "linux")
+endif()
+
+# Output directories (.dll -> RUNTIME, .dll.a/.lib -> ARCHIVE, .so -> LIBRARY).
+# By default, archives go to a throwaway dir inside the build tree - we don't
+# want every adapter / plugin / FetchContent .dll.a / .a polluting OUTPUT_DIR.
+# Targets whose archives are actually consumed (runner_*, test_engine,
+# parallel_lib import-libs for student linking) override ARCHIVE_OUTPUT_DIRECTORY
+# back to OUTPUT_DIR explicitly.
+set(OUTPUT_DIR ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}-${PLATFORM_SUFFIX})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${OUTPUT_DIR})
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${OUTPUT_DIR})
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/_archives)
 
 # Create plugins directory
-file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/plugins)
+file(MAKE_DIRECTORY ${OUTPUT_DIR}/plugins)
 
 # ============================================
 # Dependencies via FetchContent
@@ -45,12 +58,25 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(nlohmann_json)
 
+# ParlayLib (header-only) - optional, for parlay framework support
+option(ENABLE_PARLAY "Enable ParlayLib framework support" ON)
+if(ENABLE_PARLAY)
+    FetchContent_Declare(
+            parlaylib
+            GIT_REPOSITORY https://github.com/cmuparlay/parlaylib.git
+            GIT_TAG master
+            EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(parlaylib)
+endif()
+
 # ============================================
 # Subdirectories
 # ============================================
 add_subdirectory(parallel_lib)   # Student-facing OpenMP wrappers (shared lib)
 add_subdirectory(test_engine)    # Lightweight plugin API (shared lib, no ext deps)
 add_subdirectory(server_core)    # Server infrastructure (shared lib, links test_engine + deps)
+add_subdirectory(runner_lib)    # Runner I/O + timing (static lib for student builds)
 add_subdirectory(tests)          # Example test plugins (DLLs)
 add_subdirectory(adapters)       # Transport adapters: HTTP, RabbitMQ (DLLs)
 add_subdirectory(resource)       # Resource providers: git, local (DLLs)
@@ -73,31 +99,70 @@ target_include_directories(cli PRIVATE
         ${CMAKE_SOURCE_DIR}/resource/include
         ${CMAKE_SOURCE_DIR}
 )
+# CLI loads resource_local at runtime - ensure it's built alongside cli
+add_dependencies(cli resource_local)
 
 # resource/include headers are part of the server_core public API (resource_manager.h uses them)
 target_include_directories(server_core PUBLIC ${CMAKE_SOURCE_DIR}/resource/include)
 
 # Create output directories for plugins
-file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/adapters)
-file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}/resource_providers)
+file(MAKE_DIRECTORY ${OUTPUT_DIR}/adapters)
+file(MAKE_DIRECTORY ${OUTPUT_DIR}/resource_providers)
+
+# Config is NOT copied/installed - drop config/ next to the exe at runtime
+# (or set CONFIG_DIR env). In Docker the volume docker/config/ -> /opt/ctr/config/.
+
+# Copy headers next to executables so BuildService/CMakeGenerator find them
+file(COPY ${CMAKE_SOURCE_DIR}/test_engine/src/ DESTINATION ${OUTPUT_DIR}/include/test_engine
+     FILES_MATCHING PATTERN "*.h")
+file(COPY ${CMAKE_SOURCE_DIR}/parallel_lib/include/ DESTINATION ${OUTPUT_DIR}/include/parallel_lib)
+file(COPY ${CMAKE_SOURCE_DIR}/parallel_lib/shadow/ DESTINATION ${OUTPUT_DIR}/include/shadow_omp)
+file(COPY ${CMAKE_SOURCE_DIR}/runner_lib/include/ DESTINATION ${OUTPUT_DIR}/include/runner_lib)
+if(ENABLE_PARLAY)
+    file(COPY ${parlaylib_SOURCE_DIR}/include/parlay DESTINATION ${OUTPUT_DIR}/include)
+endif()
+
+# Static CMake helpers + templates used by BuildService at runtime.
+file(COPY ${CMAKE_SOURCE_DIR}/cmake/ DESTINATION ${OUTPUT_DIR}/cmake
+     FILES_MATCHING
+         PATTERN "*.cmake"
+         PATTERN "*.cmake.in")
 
 if(UNIX)
     set_target_properties(server cli PROPERTIES
-            BUILD_RPATH "${CMAKE_SOURCE_DIR}/output-${CMAKE_BUILD_TYPE}"
-            INSTALL_RPATH "$ORIGIN/../lib"
+            BUILD_RPATH "${OUTPUT_DIR}"
+            INSTALL_RPATH "$ORIGIN"
     )
+endif()
+
+# Copy MinGW runtime DLLs so runner child processes can find them
+if(WIN32 AND MINGW)
+    get_filename_component(MINGW_BIN_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
+    foreach(dll libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll libgomp-1.dll)
+        if(EXISTS "${MINGW_BIN_DIR}/${dll}")
+            file(COPY "${MINGW_BIN_DIR}/${dll}" DESTINATION "${OUTPUT_DIR}")
+        endif()
+    endforeach()
 endif()
 
 # ============================================
 # Install rules
 # ============================================
-install(TARGETS server
-        RUNTIME DESTINATION bin
+install(TARGETS server cli
+        RUNTIME DESTINATION .
+)
+install(TARGETS http_adapter rabbit_adapter
+        LIBRARY DESTINATION adapters
+        RUNTIME DESTINATION adapters
+)
+install(TARGETS resource_git resource_local
+        LIBRARY DESTINATION resource_providers
+        RUNTIME DESTINATION resource_providers
 )
 install(TARGETS test_engine server_core parallel_lib
-        LIBRARY DESTINATION lib
-        RUNTIME DESTINATION bin
-        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION .
+        RUNTIME DESTINATION .
+        ARCHIVE DESTINATION .
 )
 install(DIRECTORY test_engine/src/
         DESTINATION include/test_engine
@@ -107,6 +172,22 @@ install(DIRECTORY server_core/src/
         DESTINATION include/server_core
         FILES_MATCHING PATTERN "*.h"
 )
-install(DIRECTORY parallel_lib/include/par
-        DESTINATION include
-)
+install(DIRECTORY parallel_lib/include/ DESTINATION include/parallel_lib)
+install(DIRECTORY parallel_lib/shadow/ DESTINATION include/shadow_omp FILES_MATCHING PATTERN "*.h")
+set(_runner_targets runner_lib runner_omp runner_cilk runner_seq)
+if(ENABLE_PARLAY)
+    list(APPEND _runner_targets runner_parlay)
+endif()
+install(TARGETS ${_runner_targets} ARCHIVE DESTINATION .)
+
+install(DIRECTORY runner_lib/include/ DESTINATION include/runner_lib FILES_MATCHING PATTERN "*.h")
+if(ENABLE_PARLAY)
+    install(DIRECTORY ${parlaylib_SOURCE_DIR}/include/parlay DESTINATION include)
+endif()
+
+# CMake helpers and templates read by BuildService / CMakeGenerator at runtime
+# (runner_wrapper.cmake.in, test_plugin_wrapper.cmake.in, block_network.cmake).
+install(DIRECTORY cmake/ DESTINATION cmake
+        FILES_MATCHING
+            PATTERN "*.cmake"
+            PATTERN "*.cmake.in")

@@ -101,6 +101,12 @@ namespace runner {
     void end_execute();
     double execute_time_ms();
 
+    /// Advances the RUNNER_EXECUTE pass counter and bumps the timer. Called
+    /// from the `iter` clause of the for-loop the macro expands to.
+    ///   pass=0 -> end of warmup iteration -> start timing
+    ///   pass=1 -> end of timed iteration -> stop timing
+    void next_pass(int& pass);
+
     // ========================================================================
     // Finish hook (framework variants inject parallelStats into Meta)
     // ========================================================================
@@ -127,6 +133,11 @@ namespace runner {
     } \
     static void runner_user_code_()
 
+/// Runs the test body twice: a warmup pass (untimed - primes caches, the OMP
+/// thread pool, page faults), then the real timed pass. Without this, micro
+/// benchmarks see the cost of first-touch and pool spin-up baked into T1,
+/// which makes Tp look "super-linear" (e.g. 13x speedup on 4 threads). The
+/// student body must be deterministic and idempotent - re-executing should
+/// produce the same output.
 #define RUNNER_EXECUTE \
-    runner::begin_execute(); \
-    for (bool _runner_once_ = true; _runner_once_; _runner_once_ = false, runner::end_execute())
+    for (int _runner_pass_ = 0; _runner_pass_ < 2; runner::next_pass(_runner_pass_))
