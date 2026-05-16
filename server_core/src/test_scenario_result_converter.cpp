@@ -54,19 +54,8 @@ nlohmann::json TestScenarioResultConverter::to_grouped_json(
                 double parallelism = (tr.span_ns > 0)
                     ? static_cast<double>(tr.work_ns) / static_cast<double>(tr.span_ns)
                     : 0.0;
-                // Speedup is only meaningful when the baseline (1-thread run)
-                // does enough work for OMP/pool overhead, page faults, and
-                // cold-cache effects to be small relative to it. Below the
-                // threshold we'd be reporting noise (e.g. 13x speedup on a
-                // 0.3 ms test). Clamp to 0 and let the grader display "N/A".
-                constexpr double kMinBaselineMs = 10.0;
-                bool baseline_meaningful = (t1_ms >= kMinBaselineMs);
-                double speedup = 0.0;
-                double efficiency = 0.0;
-                if(baseline_meaningful && tr.time_ms > 0.0) {
-                    speedup = t1_ms / tr.time_ms;
-                    if(r.threads > 0) efficiency = speedup / r.threads;
-                }
+                double speedup = (tr.time_ms > 0.0) ? t1_ms / tr.time_ms : 0.0;
+                double efficiency = (r.threads > 0) ? speedup / r.threads : 0.0;
 
                 nlohmann::json stats = {
                     {"timeMs", tr.time_ms},
@@ -74,8 +63,7 @@ nlohmann::json TestScenarioResultConverter::to_grouped_json(
                     {"spanMs", span_ms},
                     {"parallelism", parallelism},
                     {"speedup", speedup},
-                    {"efficiency", efficiency},
-                    {"speedupReliable", baseline_meaningful}
+                    {"efficiency", efficiency}
                 };
 
                 // Compute efficiency: work / (time * threads) - fraction of CPU doing useful work
@@ -134,4 +122,3 @@ nlohmann::json TestScenarioResultConverter::to_grouped_json(
 
     return scenarios_json;
 }
-

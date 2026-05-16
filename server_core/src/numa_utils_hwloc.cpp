@@ -23,14 +23,19 @@
 #include <iostream>
 #include <hwloc.h>
 
+
 namespace numa {
 
     namespace {
 
         struct HwlocTopology {
             hwloc_topology_t topo = nullptr;
+
             HwlocTopology() {
-                if(hwloc_topology_init(&topo) != 0) { topo = nullptr; return; }
+                if(hwloc_topology_init(&topo) != 0) {
+                    topo = nullptr;
+                    return;
+                }
                 // Don't restrict topology to allowed cpuset - we want to see
                 // the whole hardware tree and filter ourselves. This keeps
                 // L3/NUMA structure visible even when allowed_cpuset is sparse.
@@ -39,6 +44,7 @@ namespace numa {
                     topo = nullptr;
                 }
             }
+
             ~HwlocTopology() { if(topo) hwloc_topology_destroy(topo); }
             HwlocTopology(const HwlocTopology&) = delete;
             HwlocTopology& operator=(const HwlocTopology&) = delete;
@@ -58,13 +64,19 @@ namespace numa {
         // Iterate every CORE that has any PU inside `parent_cpuset` (assumes
         // hwloc_topology already loaded). Returns physical-representative PU
         // indices that are also in `allowed`.
-        std::vector<int> cores_in(hwloc_topology_t t,
-                                  hwloc_const_cpuset_t parent_cpuset,
-                                  hwloc_const_cpuset_t allowed) {
+        std::vector<int> cores_in(
+            hwloc_topology_t t,
+            hwloc_const_cpuset_t parent_cpuset,
+            hwloc_const_cpuset_t allowed
+        ) {
             std::vector<int> out;
             hwloc_obj_t core = nullptr;
             while((core = hwloc_get_next_obj_inside_cpuset_by_type(
-                    t, parent_cpuset, HWLOC_OBJ_CORE, core)) != nullptr) {
+                t,
+                parent_cpuset,
+                HWLOC_OBJ_CORE,
+                core
+            )) != nullptr) {
                 int rep = physical_representative(core, allowed);
                 if(rep >= 0) out.push_back(rep);
             }
@@ -128,12 +140,5 @@ namespace numa {
         hwloc_bitmap_free(allowed);
         return info;
     }
-
-    // ---- Reserved-API stubs: not currently called, see memory/project_reserved_dead_code.md ----
-    bool pin_to_node(int)         { return false; }
-    bool set_memory_policy(int)   { return false; }
-    void reset()                  {}
-    bool pin_omp_threads(int)     { return false; }
-    void reset_omp_threads()      {}
 
 } // namespace numa

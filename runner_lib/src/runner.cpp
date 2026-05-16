@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iostream>
 
+
 namespace runner {
 
     static RunnerConfig config_;
@@ -20,20 +21,18 @@ namespace runner {
     const RunnerConfig& init(int argc, char* argv[]) {
         config_ = RunnerConfig{};
         finish_hook_ = nullptr;
-        input_data_  = TestData{};
+        input_data_ = TestData{};
         output_data_ = TestData{};
 
         for(int i = 1; i < argc; i += 2) {
             std::string key = argv[i];
             if(i + 1 >= argc) break;
             std::string val = argv[i + 1];
-            if(key == "--input")             config_.input_dir = val;
-            else if(key == "--output")       config_.output_dir = val;
+            if(key == "--input") config_.input_dir = val;
+            else if(key == "--output") config_.output_dir = val;
             else if(key == "--threads") {
-                try { config_.thread_count = std::stoi(val); }
-                catch(...) { config_.thread_count = 1; }
-            }
-            else if(key == "--monitor-mode") config_.monitor_mode = val;
+                try { config_.thread_count = std::stoi(val); } catch(...) { config_.thread_count = 1; }
+            } else if(key == "--monitor-mode") config_.monitor_mode = val;
         }
 
         if(!config_.output_dir.empty()) {
@@ -46,7 +45,7 @@ namespace runner {
 
     const RunnerConfig& config() { return config_; }
 
-    TestData& input()  { return input_data_; }
+    TestData& input() { return input_data_; }
     TestData& output() { return output_data_; }
 
     void load_input() {
@@ -65,14 +64,9 @@ namespace runner {
 
     double execute_time_ms() {
         auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-            execute_end_ - execute_start_).count();
+            execute_end_ - execute_start_
+        ).count();
         return static_cast<double>(us) / 1000.0;
-    }
-
-    void next_pass(int& pass) {
-        ++pass;
-        if(pass == 1) begin_execute();      // warmup done -> start timer
-        else if(pass == 2) end_execute();   // timed done   -> stop timer
     }
 
     void set_finish_hook(finish_hook_t hook) {

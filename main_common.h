@@ -93,14 +93,19 @@ inline common_config setup_common(const fs::path& exe_path) {
     c.build_config.shadow_omp_dir = config::get_env(
         "SHADOW_OMP_DIR",           (inc / "shadow_omp").string());
 
-    c.build_config.runner_omp_lib_path = config::get_env(
-        "RUNNER_OMP_LIB_PATH",      lib_near_exe(c.exe_dir, "librunner_omp.a"));
-    c.build_config.runner_parlay_lib_path = config::get_env(
-        "RUNNER_PARLAY_LIB_PATH",   lib_near_exe(c.exe_dir, "librunner_parlay.a"));
-    c.build_config.runner_cilk_lib_path = config::get_env(
-        "RUNNER_CILK_LIB_PATH",     lib_near_exe(c.exe_dir, "librunner_cilk.a"));
-    c.build_config.runner_seq_lib_path = config::get_env(
-        "RUNNER_SEQ_LIB_PATH",      lib_near_exe(c.exe_dir, "librunner_seq.a"));
+    // Per-framework runner sources (compiled at student-build time, not pre-built archives).
+    c.build_config.runner_omp_source_path = config::get_env(
+        "RUNNER_OMP_SOURCE_PATH",
+        (c.exe_dir / "runner_lib" / "omp" / "src" / "runner_omp.cpp").string());
+    c.build_config.runner_parlay_source_path = config::get_env(
+        "RUNNER_PARLAY_SOURCE_PATH",
+        (c.exe_dir / "runner_lib" / "parlay" / "src" / "runner_parlay.cpp").string());
+    c.build_config.runner_cilk_source_path = config::get_env(
+        "RUNNER_CILK_SOURCE_PATH",
+        (c.exe_dir / "runner_lib" / "cilk" / "src" / "runner_cilk.cpp").string());
+    c.build_config.runner_seq_source_path = config::get_env(
+        "RUNNER_SEQ_SOURCE_PATH",
+        (c.exe_dir / "runner_lib" / "seq" / "src" / "runner_seq.cpp").string());
 
     c.build_config.parlay_headers_path = config::get_env(
         "PARLAY_HEADERS_PATH",      inc.string());

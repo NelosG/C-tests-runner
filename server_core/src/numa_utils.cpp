@@ -70,8 +70,10 @@ namespace numa {
     // restricted containers (Docker Desktop / WSL2) where the kernel exposes
     // a sparse cpuset like {0,1,3,5,7,...} - picking the absolute first
     // sibling (say cpu 2 of pair {2,3}) would silently drop the whole pair.
-    static std::vector<int> filter_physical_cores(const std::vector<int>& cpus,
-                                                  const std::set<int>& allowed = {}) {
+    static std::vector<int> filter_physical_cores(
+        const std::vector<int>& cpus,
+        const std::set<int>& allowed = {}
+    ) {
         std::vector<int> physical;
         for(int cpu : cpus) {
             std::string siblings_str = read_sys_file(
@@ -90,7 +92,10 @@ namespace numa {
             if(!allowed.empty()) {
                 rep = -1;
                 for(int s : siblings) {
-                    if(allowed.count(s)) { rep = s; break; }
+                    if(allowed.count(s)) {
+                        rep = s;
+                        break;
+                    }
                 }
                 // No sibling of this group is allowed - entire SMT class
                 // unavailable, contributes nothing.
@@ -135,111 +140,6 @@ namespace numa {
         }
         numa_free_cpumask(cpumask);
         return info;
-    }
-
-    bool pin_to_node(int node) {
-        auto topo = discover();
-        if(node < 0 || node >= topo.node_count) {
-            std::cerr << "[NUMA] Invalid node " << node << ", have " << topo.node_count << " nodes\n";
-            return false;
-        }
-
-        const auto& cores = topo.cores_per_node[node];
-        cpu_set_t mask;
-        CPU_ZERO(&mask);
-        for(int c : cores) {
-            CPU_SET(c, &mask);
-        }
-
-        if(sched_setaffinity(0, sizeof(mask), &mask) != 0) {
-            std::cerr << "[NUMA] sched_setaffinity failed: " << strerror(errno) << "\n";
-            return false;
-        }
-
-        std::cout << "[NUMA] Pinned to node " << node << " cores:";
-        for(int c : cores) std::cout << " " << c;
-        std::cout << "\n";
-        return true;
-    }
-
-    bool set_memory_policy(int node) {
-        struct bitmask* nodemask = numa_allocate_nodemask();
-        numa_bitmask_setbit(nodemask, static_cast<unsigned int>(node));
-        numa_set_membind(nodemask);
-        numa_free_nodemask(nodemask);
-        std::cout << "[NUMA] Memory policy set to BIND node " << node << "\n";
-        return true;
-    }
-
-    void reset() {
-        // Reset CPU affinity to all CPUs
-        int n = static_cast<int>(std::thread::hardware_concurrency());
-        cpu_set_t mask;
-        CPU_ZERO(&mask);
-        for(int i = 0; i < n; ++i) CPU_SET(i, &mask);
-        if(sched_setaffinity(0, sizeof(mask), &mask) != 0) {
-            std::cerr << "[NUMA] Reset affinity failed: " << strerror(errno) << "\n";
-        }
-
-        // Reset memory policy via libnuma
-        numa_set_localalloc();
-        std::cout << "[NUMA] Affinity and memory policy reset\n";
-    }
-
-    bool pin_omp_threads(int node) {
-        auto topo = discover();
-        if(node < 0 || node >= topo.node_count) {
-            std::cerr << "[NUMA] Invalid node " << node << ", have " << topo.node_count << " nodes\n";
-            return false;
-        }
-
-        const auto& cores = topo.cores_per_node[node];
-        cpu_set_t mask;
-        CPU_ZERO(&mask);
-        for(int c : cores) {
-            CPU_SET(c, &mask);
-        }
-
-        // omp_set_dynamic(0): ensure the runtime creates exactly omp_get_max_threads() threads.
-        // Affinity persists across omp_set_num_threads() changes because OpenMP runtimes
-        // reuse OS threads from a persistent pool - sleeping workers retain their affinity mask.
-        // Caller must call omp_set_num_threads(max) before this function.
-        bool all_ok = true;
-        omp_set_dynamic(0);
-        #pragma omp parallel default(none) shared(all_ok, mask)
-        {
-            if(sched_setaffinity(0, sizeof(mask), &mask) != 0) {
-                #pragma omp atomic write
-                all_ok = false;
-            }
-        }
-
-        if(all_ok) {
-            std::cout << "[NUMA] Pinned OMP threads to node " << node << " cores:";
-            for(int c : cores) std::cout << " " << c;
-            std::cout << " (" << omp_get_max_threads() << " threads)\n";
-        } else {
-            std::cerr << "[NUMA] Some OMP threads failed to pin to node " << node << "\n";
-        }
-        return all_ok;
-    }
-
-    void reset_omp_threads() {
-        int n = static_cast<int>(std::thread::hardware_concurrency());
-        cpu_set_t mask;
-        CPU_ZERO(&mask);
-        for(int i = 0; i < n; ++i) CPU_SET(i, &mask);
-
-        // omp_set_dynamic(0): ensure all pool threads participate in the reset.
-        omp_set_dynamic(0);
-        #pragma omp parallel default(none) shared(mask)
-        {
-            sched_setaffinity(0, sizeof(mask), &mask);
-        }
-
-        // Reset memory policy via libnuma
-        numa_set_localalloc();
-        std::cout << "[NUMA] OMP thread affinity and memory policy reset\n";
     }
 
     #else // !NUMA_USE_LIBNUMA
@@ -306,122 +206,6 @@ namespace numa {
             info.cores_per_node[i] = filter_physical_cores(all_cpus, allowed_cpus);
         }
         return info;
-    }
-
-    bool pin_to_node(int node) {
-        auto topo = discover();
-        if(node < 0 || node >= topo.node_count) {
-            std::cerr << "[NUMA] Invalid node " << node << ", have " << topo.node_count << " nodes\n";
-            return false;
-        }
-
-        const auto& cores = topo.cores_per_node[node];
-        cpu_set_t mask;
-        CPU_ZERO(&mask);
-        for(int c : cores) {
-            CPU_SET(c, &mask);
-        }
-
-        if(sched_setaffinity(0, sizeof(mask), &mask) != 0) {
-            std::cerr << "[NUMA] sched_setaffinity failed: " << strerror(errno) << "\n";
-            return false;
-        }
-
-        std::cout << "[NUMA] Pinned to node " << node << " cores:";
-        for(int c : cores) std::cout << " " << c;
-        std::cout << "\n";
-        return true;
-    }
-
-    bool set_memory_policy(int node) {
-        constexpr int max_node = sizeof(unsigned long) * 8 - 1;
-        if(node < 0 || node > max_node) {
-            std::cerr << "[NUMA] setMemoryPolicy: node " << node
-                      << " out of range (max " << max_node << ")\n";
-            return false;
-        }
-        unsigned long nodemask = 1UL << node;
-        // set_mempolicy(MPOL_BIND, nodemask, maxnode)
-        long ret = syscall(SYS_set_mempolicy, MPOL_BIND, &nodemask, sizeof(nodemask) * 8);
-        if(ret != 0) {
-            std::cerr << "[NUMA] set_mempolicy failed: " << strerror(errno) << "\n";
-            return false;
-        }
-        std::cout << "[NUMA] Memory policy set to BIND node " << node << "\n";
-        return true;
-    }
-
-    void reset() {
-        // Reset CPU affinity to all CPUs
-        int n = static_cast<int>(std::thread::hardware_concurrency());
-        cpu_set_t mask;
-        CPU_ZERO(&mask);
-        for(int i = 0; i < n; ++i) CPU_SET(i, &mask);
-        if(sched_setaffinity(0, sizeof(mask), &mask) != 0) {
-            std::cerr << "[NUMA] Reset affinity failed: " << strerror(errno) << "\n";
-        }
-
-        // Reset memory policy to default
-        if(syscall(SYS_set_mempolicy, MPOL_DEFAULT, nullptr, 0) != 0) {
-            std::cerr << "[NUMA] Reset memory policy failed: " << strerror(errno) << "\n";
-        }
-        std::cout << "[NUMA] Affinity and memory policy reset\n";
-    }
-
-    bool pin_omp_threads(int node) {
-        auto topo = discover();
-        if(node < 0 || node >= topo.node_count) {
-            std::cerr << "[NUMA] Invalid node " << node << ", have " << topo.node_count << " nodes\n";
-            return false;
-        }
-
-        const auto& cores = topo.cores_per_node[node];
-        cpu_set_t mask;
-        CPU_ZERO(&mask);
-        for(int c : cores) {
-            CPU_SET(c, &mask);
-        }
-
-        // omp_set_dynamic(0): ensure the runtime creates exactly omp_get_max_threads() threads.
-        // Affinity persists across omp_set_num_threads() changes because OpenMP runtimes
-        // reuse OS threads from a persistent pool - sleeping workers retain their affinity mask.
-        // Caller must call omp_set_num_threads(max) before this function.
-        bool all_ok = true;
-        omp_set_dynamic(0);
-        #pragma omp parallel default(none) shared(all_ok, mask)
-        {
-            if(sched_setaffinity(0, sizeof(mask), &mask) != 0) {
-                #pragma omp atomic write
-                all_ok = false;
-            }
-        }
-
-        if(all_ok) {
-            std::cout << "[NUMA] Pinned OMP threads to node " << node << " cores:";
-            for(int c : cores) std::cout << " " << c;
-            std::cout << " (" << omp_get_max_threads() << " threads)\n";
-        } else {
-            std::cerr << "[NUMA] Some OMP threads failed to pin to node " << node << "\n";
-        }
-        return all_ok;
-    }
-
-    void reset_omp_threads() {
-        int n = static_cast<int>(std::thread::hardware_concurrency());
-        cpu_set_t mask;
-        CPU_ZERO(&mask);
-        for(int i = 0; i < n; ++i) CPU_SET(i, &mask);
-
-        // omp_set_dynamic(0): ensure all pool threads participate in the reset.
-        omp_set_dynamic(0);
-        #pragma omp parallel default(none) shared(mask)
-        {
-            sched_setaffinity(0, sizeof(mask), &mask);
-        }
-
-        // Reset memory policy to default
-        syscall(SYS_set_mempolicy, MPOL_DEFAULT, nullptr, 0);
-        std::cout << "[NUMA] OMP thread affinity and memory policy reset\n";
     }
 
     #endif // NUMA_USE_LIBNUMA
@@ -491,101 +275,6 @@ namespace numa {
         return info;
     }
 
-    bool pin_to_node(const int node) {
-        auto topo = discover();
-        if(node < 0 || node >= topo.node_count) {
-            std::cerr << "[NUMA] Invalid node " << node << ", have " << topo.node_count << " nodes\n";
-            return false;
-        }
-
-        const auto& cores = topo.cores_per_node[node];
-        DWORD_PTR mask = 0;
-        for(const int c : cores) {
-            mask |= (1ULL << c);
-        }
-
-        if(!SetThreadAffinityMask(GetCurrentThread(), mask)) {
-            std::cerr << "[NUMA] SetThreadAffinityMask failed: " << GetLastError() << "\n";
-            return false;
-        }
-
-        std::cout << "[NUMA] Pinned to node " << node << " cores:";
-        for(int c : cores) std::cout << " " << c;
-        std::cout << "\n";
-        return true;
-    }
-
-    bool set_memory_policy(int /*node*/) {
-        // Best-effort on Windows - VirtualAllocExNuma could be used per-allocation.
-        return true;
-    }
-
-    void reset() {
-        // Reset to all processors
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        DWORD_PTR mask = (si.dwNumberOfProcessors >= 64)
-            ? ~static_cast<DWORD_PTR>(0)
-            : (static_cast<DWORD_PTR>(1) << si.dwNumberOfProcessors) - 1;
-        if(!SetThreadAffinityMask(GetCurrentThread(), mask)) {
-            std::cerr << "[NUMA] Reset affinity failed: " << GetLastError() << "\n";
-        }
-        std::cout << "[NUMA] Affinity reset\n";
-    }
-
-    bool pin_omp_threads(const int node) {
-        auto topo = discover();
-        if(node < 0 || node >= topo.node_count) {
-            std::cerr << "[NUMA] Invalid node " << node << ", have " << topo.node_count << " nodes\n";
-            return false;
-        }
-
-        const auto& cores = topo.cores_per_node[node];
-        DWORD_PTR mask = 0;
-        for(const int c : cores) {
-            mask |= (1ULL << c);
-        }
-
-        // omp_set_dynamic(0): ensure the runtime creates exactly omp_get_max_threads() threads.
-        // Affinity persists across omp_set_num_threads() changes because OpenMP runtimes
-        // reuse OS threads from a persistent pool - sleeping workers retain their affinity mask.
-        // Caller must call omp_set_num_threads(max) before this function.
-        bool all_ok = true;
-        omp_set_dynamic(0);
-        #pragma omp parallel default(none) shared(all_ok, mask)
-        {
-            if(!SetThreadAffinityMask(GetCurrentThread(), mask)) {
-                #pragma omp atomic write
-                all_ok = false;
-            }
-        }
-
-        if(all_ok) {
-            std::cout << "[NUMA] Pinned OMP threads to node " << node << " cores:";
-            for(int c : cores) std::cout << " " << c;
-            std::cout << " (" << omp_get_max_threads() << " threads)\n";
-        } else {
-            std::cerr << "[NUMA] Some OMP threads failed to pin to node " << node << "\n";
-        }
-        return all_ok;
-    }
-
-    void reset_omp_threads() {
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        DWORD_PTR mask = (si.dwNumberOfProcessors >= 64)
-            ? ~static_cast<DWORD_PTR>(0)
-            : (static_cast<DWORD_PTR>(1) << si.dwNumberOfProcessors) - 1;
-
-        // omp_set_dynamic(0): ensure all pool threads participate in the reset.
-        omp_set_dynamic(0);
-        #pragma omp parallel default(none) shared(mask)
-        {
-            SetThreadAffinityMask(GetCurrentThread(), mask);
-        }
-        std::cout << "[NUMA] OMP thread affinity reset\n";
-    }
-
     #else
 
     // Unsupported platform stubs
@@ -599,11 +288,6 @@ namespace numa {
         return info;
     }
 
-    bool pin_to_node(int) { return false; }
-    bool set_memory_policy(int) { return false; }
-    void reset() {}
-    bool pin_omp_threads(int) { return false; }
-    void reset_omp_threads() {}
 
     #endif
 

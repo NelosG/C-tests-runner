@@ -32,126 +32,152 @@
 class TestRegistry;
 
 class Pipeline {
-public:
-    /// Interface a Pipeline uses to enforce sandbox-exclusive performance phases.
-    /// JobQueue implements it; tests can stub it out with no-ops.
-    struct LaneController {
-        virtual ~LaneController() = default;
-        virtual void enter_correctness_phase() = 0;
-        virtual void exit_correctness_phase()  = 0;
-        virtual void enter_perf_phase()        = 0;
-        virtual void exit_perf_phase()         = 0;
-    };
+    public:
+        /// Interface a Pipeline uses to enforce sandbox-exclusive performance phases.
+        /// JobQueue implements it; tests can stub it out with no-ops.
+        struct LaneController {
+            virtual ~LaneController() = default;
+            virtual void enter_correctness_phase() = 0;
+            virtual void exit_correctness_phase() = 0;
+            virtual void enter_perf_phase() = 0;
+            virtual void exit_perf_phase() = 0;
+        };
 
-    Pipeline(BuildService& build_service,
-             SandboxTestExecutor& test_executor,
-             ResourceManager& resource_manager,
-             LaneController& lane_controller);
+        Pipeline(
+            BuildService& build_service,
+            SandboxTestExecutor& test_executor,
+            ResourceManager& resource_manager,
+            LaneController& lane_controller
+        );
 
-    /// Run one job through the full pipeline. Result is the TaskResult JSON.
-    /// @param on_progress optional best-effort callback invoked at phase
-    ///        transitions and around each test invocation (see progress_callback.h).
-    nlohmann::json execute(
-        const nlohmann::json& request,
-        std::function<void(job_status)> status_updater,
-        progress::callback on_progress = {}
-    );
+        /// Run one job through the full pipeline. Result is the TaskResult JSON.
+        /// @param request      TaskSubmission JSON (camelCase fields from orchestrator).
+        ///                     Not mutated - engine-internal data is passed as
+        ///                     separate parameters below.
+        /// @param node_id      Engine node identifier (set by adapter on receive).
+        ///                     Used in progress events; empty for CLI invocations.
+        /// @param on_progress  optional best-effort callback invoked at phase
+        ///                     transitions and around each test invocation
+        ///                     (see progress_callback.h).
+        nlohmann::json execute(
+            const nlohmann::json& request,
+            const std::string& node_id,
+            std::function<void(job_status)> status_updater,
+            progress::callback on_progress = {}
+        );
 
-private:
-    struct ResolvedPaths {
-        std::string test_dir;
-        std::string solution_dir;
-    };
+    private:
+        struct ResolvedPaths {
+            std::string test_dir;
+            std::string solution_dir;
+        };
 
-    /// Per-execute() state threaded through pipeline steps. Each step reads
-    /// inputs from earlier steps and writes either result fields (success)
-    /// or failure metadata, returning false to halt the pipeline.
-    struct JobContext {
-        // Inputs (from request)
-        const nlohmann::json& request;
-        std::string job_id;
-        std::string test_id;
-        std::string node_id;
-        int threads = 4;
-        long long memory_limit_mb = 0;
-        int wall_time_sec = 60;
-        int cpu_time_sec = 30;
-        int max_processes = 0;     ///< 0 -> derive from threads * sandbox_process_multiplier
-        std::string solution_name;
-        progress::callback on_progress;
+        /// Per-execute() state threaded through pipeline steps. Each step reads
+        /// inputs from earlier steps and writes either result fields (success)
+        /// or failure metadata, returning false to halt the pipeline.
+        struct JobContext {
+            // Inputs (from request)
+            const nlohmann::json& request;
+            std::string job_id;
+            std::string test_id;
+            std::string node_id;
+            int threads = 4;
+            long long memory_limit_mb = 0;
+            int wall_time_sec = 60;
+            int cpu_time_sec = 30;
+            int max_processes = 0;     ///< 0 -> derive from threads * sandbox_process_multiplier
+            std::string solution_name;
+            progress::callback on_progress;
 
-        // Accumulating output
-        nlohmann::json result;
-        nlohmann::json pipeline = nlohmann::json::array();
+            // Accumulating output
+            nlohmann::json result;
+            nlohmann::json pipeline = nlohmann::json::array();
 
-        // Step outputs
-        ResolvedPaths paths;
-        AssignmentConfig assignment_config;
-        std::string framework;     // detected
-        std::string mode;
-        BuildService::RunnerBuildResult runner_result;
-        BuildService::TestPluginBuildResult plugin_result;
-        std::string runner_build_dir;
-        std::string plugin_build_dir;
-        std::string plugin_load_error;
+            // Step outputs
+            ResolvedPaths paths;
+            AssignmentConfig assignment_config;
+            std::string framework;     // detected
+            std::string mode;
+            BuildService::RunnerBuildResult runner_result;
+            BuildService::TestPluginBuildResult plugin_result;
+            std::string runner_build_dir;
+            std::string plugin_build_dir;
+            std::string plugin_load_error;
 
-        // Timing
-        std::chrono::steady_clock::time_point job_start = std::chrono::steady_clock::now();
-        std::chrono::steady_clock::time_point step_start = job_start;
+            // Timing
+            std::chrono::steady_clock::time_point job_start = std::chrono::steady_clock::now();
+            std::chrono::steady_clock::time_point step_start = job_start;
 
-        void add_step(const std::string& name, const std::string& status, double ms);
-        double step_ms();
-        /// Build a phase progress event (camelCase, ISO8601 timestamp) and
-        /// invoke on_progress if it is set. Best-effort, swallows exceptions.
-        void emit_phase(const std::string& phase,
-                        const std::string& message = "",
-                        std::optional<double> progress = std::nullopt) const;
-    };
+            void add_step(const std::string& name, const std::string& status, double ms);
+            double step_ms();
+            /// Build a phase progress event (camelCase, ISO8601 timestamp) and
+            /// invoke on_progress if it is set. Best-effort, swallows exceptions.
+            void emit_phase(
+                const std::string& phase,
+                const std::string& message = "",
+                std::optional<double> progress = std::nullopt
+            ) const;
+        };
 
-    void init_job_context(JobContext& ctx) const;
-    ResolvedPaths resolve_paths(const nlohmann::json& request, const JobContext& ctx) const;
+        void init_job_context(JobContext& ctx) const;
+        ResolvedPaths resolve_paths(const nlohmann::json& request, const JobContext& ctx) const;
 
-    /// Mark a pipeline step as failed and populate ctx.result with diagnostics.
-    /// Always returns false so callers can `return fail_step(...);`.
-    static bool fail_step(JobContext& ctx, const std::string& step,
-                         const std::string& error_message,
-                         nlohmann::json extra_details = {});
+        /// Mark a pipeline step as failed and populate ctx.result with diagnostics.
+        /// Always returns false so callers can `return fail_step(...);`.
+        static bool fail_step(
+            JobContext& ctx,
+            const std::string& step,
+            const std::string& error_message,
+            nlohmann::json extra_details = {}
+        );
 
-    // Pipeline steps.
-    //   Steps that may fail return bool - `true` to continue, `false` to halt.
-    //   Steps that cannot fail return void (no early-exit path).
-    bool step_resolve(JobContext& ctx) const;
-    void step_parse_config(JobContext& ctx) const;
-    bool step_detect_framework(JobContext& ctx) const;
-    bool step_validate(JobContext& ctx) const;
-    bool step_build_runner(JobContext& ctx, std::function<void(job_status)>& status_updater) const;
-    bool step_build_plugins(JobContext& ctx) const;
-    void step_load_plugins(JobContext& ctx, TestRegistry& registry, PluginLoader& loader) const;
-    void step_run_tests(JobContext& ctx, TestRegistry& registry,
-                      std::function<void(job_status)>& status_updater) const;
+        // Pipeline steps.
+        //   Steps that may fail return bool - `true` to continue, `false` to halt.
+        //   Steps that cannot fail return void (no early-exit path).
+        bool step_resolve(JobContext& ctx) const;
+        void step_parse_config(JobContext& ctx) const;
+        bool step_detect_framework(JobContext& ctx) const;
+        bool step_validate(JobContext& ctx) const;
+        bool step_build_runner(JobContext& ctx, std::function<void(job_status)>& status_updater) const;
+        bool step_build_plugins(JobContext& ctx) const;
+        void step_load_plugins(JobContext& ctx, TestRegistry& registry, PluginLoader& loader) const;
+        void step_run_tests(
+            JobContext& ctx,
+            TestRegistry& registry,
+            std::function<void(job_status)>& status_updater
+        ) const;
 
-    /// Run a single sandbox lane (correctness OR performance) and record its
-    /// pipeline step. Returns the test results paired with their thread counts.
-    struct LaneResults {
-        std::vector<TestScenarioResult> results;
-        std::vector<int> thread_counts;
-    };
-    LaneResults run_lane(JobContext& ctx, TestRegistry& registry,
-                        ScenarioType type, const std::string& step_name,
-                        bool is_perf) const;
+        /// Run a single sandbox lane (correctness OR performance) and record its
+        /// pipeline step. Returns the test results paired with their thread counts.
+        struct LaneResults {
+            std::vector<TestScenarioResult> results;
+            std::vector<int> thread_counts;
+        };
 
-    /// Emit a finished lane's grouped results, threadCounts entry, and summary
-    /// section under the given key (e.g. "correctness" / "performance"). Mutates
-    /// ctx.result in place and writes the lane's summary into `summary[key]`.
-    static void emit_lane_result(JobContext& ctx, const std::string& key,
-                               bool is_perf, const LaneResults& lane,
-                               nlohmann::json& summary);
+        LaneResults run_lane(
+            JobContext& ctx,
+            TestRegistry& registry,
+            ScenarioType type,
+            const std::string& step_name,
+            bool is_perf
+        ) const;
 
-    /// Returns true iff every test in `results` is .passed.
-    static bool all_tests_passed(const std::vector<TestScenarioResult>& results);
+        /// Emit a finished lane's grouped results, threadCounts entry, and summary
+        /// section under the given key (e.g. "correctness" / "performance"). Mutates
+        /// ctx.result in place and writes the lane's summary into `summary[key]`.
+        static void emit_lane_result(
+            JobContext& ctx,
+            const std::string& key,
+            bool is_perf,
+            const LaneResults& lane,
+            nlohmann::json& summary
+        );
 
-    BuildService& build_service_;
-    SandboxTestExecutor& test_executor_;
-    ResourceManager& resource_manager_;
-    LaneController& lane_controller_;
+        /// Returns true iff every test in `results` is .passed.
+        static bool all_tests_passed(const std::vector<TestScenarioResult>& results);
+
+        BuildService& build_service_;
+        SandboxTestExecutor& test_executor_;
+        ResourceManager& resource_manager_;
+        LaneController& lane_controller_;
 };

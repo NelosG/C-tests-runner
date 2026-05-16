@@ -17,6 +17,8 @@ set(CORE_SOURCES
         src/job_queue.cpp
         src/json_scenario_loader.cpp
         src/pipeline.cpp
+        src/pipeline_steps.cpp
+        src/test_result_builder.cpp
         src/plugin_loader.cpp
         src/sandbox_launcher.cpp
         src/sandbox_test_executor.cpp

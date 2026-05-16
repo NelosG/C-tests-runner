@@ -27,13 +27,18 @@ class BuildService {
             std::string engine_include_path;
             std::string parallel_lib_path;
             std::string parallel_include_path;
-            std::string runner_lib_path;             ///< Path to librunner_lib.a (base, public API in runner.h)
-            std::string runner_include_path;         ///< Path to runner_lib/include (the only public include for variants)
+            std::string runner_lib_path;             ///< Path to librunner_lib.a (base, framework-agnostic)
+            std::string
+            runner_include_path;         ///< Path to runner_lib/include (the only public include for variants)
             std::string shadow_omp_dir;              ///< Path to parallel_lib/shadow/
-            std::string runner_omp_lib_path;         ///< Path to librunner_omp.a
-            std::string runner_parlay_lib_path;      ///< Path to librunner_parlay.a
-            std::string runner_cilk_lib_path;        ///< Path to librunner_cilk.a
-            std::string runner_seq_lib_path;         ///< Path to librunner_seq.a (framework=none)
+            // Per-framework runner *sources* - compiled at student-build time with the
+            // same compiler that compiles the student's solution (g++ for omp/parlay/seq,
+            // OpenCilk clang for cilk). This lets each variant use its framework's
+            // native keywords (e.g. cilk_for) for setup-time warmup.
+            std::string runner_omp_source_path;      ///< Path to runner_omp.cpp source
+            std::string runner_parlay_source_path;   ///< Path to runner_parlay.cpp source
+            std::string runner_cilk_source_path;     ///< Path to runner_cilk.cpp source
+            std::string runner_seq_source_path;      ///< Path to runner_seq.cpp source
             std::string parlay_headers_path;         ///< Path to ParlayLib headers (parent of parlay/)
             std::string template_dir;                ///< Dir containing runner_wrapper.cmake.in etc.
             std::string cmake_executable;
@@ -111,16 +116,16 @@ class BuildService {
         // are protected by std::atomic to avoid data races.
 
         long long default_memory_limit_mb() const { return default_memory_limit_mb_.load(std::memory_order_relaxed); }
-        int  default_threads() const              { return default_threads_.load(std::memory_order_relaxed); }
-        int  default_wall_time_sec() const        { return default_wall_time_sec_.load(std::memory_order_relaxed); }
-        int  default_cpu_time_sec() const         { return default_cpu_time_sec_.load(std::memory_order_relaxed); }
-        int  sandbox_process_multiplier() const   { return sandbox_process_multiplier_.load(std::memory_order_relaxed); }
+        int default_threads() const { return default_threads_.load(std::memory_order_relaxed); }
+        int default_wall_time_sec() const { return default_wall_time_sec_.load(std::memory_order_relaxed); }
+        int default_cpu_time_sec() const { return default_cpu_time_sec_.load(std::memory_order_relaxed); }
+        int sandbox_process_multiplier() const { return sandbox_process_multiplier_.load(std::memory_order_relaxed); }
 
         void set_default_memory_limit_mb(long long v) { default_memory_limit_mb_.store(v, std::memory_order_relaxed); }
-        void set_default_threads(int v)               { default_threads_.store(v, std::memory_order_relaxed); }
-        void set_default_wall_time_sec(int v)         { default_wall_time_sec_.store(v, std::memory_order_relaxed); }
-        void set_default_cpu_time_sec(int v)          { default_cpu_time_sec_.store(v, std::memory_order_relaxed); }
-        void set_sandbox_process_multiplier(int v)    { sandbox_process_multiplier_.store(v, std::memory_order_relaxed); }
+        void set_default_threads(int v) { default_threads_.store(v, std::memory_order_relaxed); }
+        void set_default_wall_time_sec(int v) { default_wall_time_sec_.store(v, std::memory_order_relaxed); }
+        void set_default_cpu_time_sec(int v) { default_cpu_time_sec_.store(v, std::memory_order_relaxed); }
+        void set_sandbox_process_multiplier(int v) { sandbox_process_multiplier_.store(v, std::memory_order_relaxed); }
 
     private:
         /// Cached test-plugin build keyed on the test directory.
@@ -140,7 +145,8 @@ class BuildService {
         BuildConfig config_;
         CMakeGenerator cmake_gen_;
         std::string cilk_compiler_path_;             ///< Cached OpenCilk clang++ path; empty if not found.
-        std::string cilk_runtime_dir_;               ///< Cached `<cilk_compiler> -print-runtime-dir`; empty if not available.
+        std::string
+        cilk_runtime_dir_;               ///< Cached `<cilk_compiler> -print-runtime-dir`; empty if not available.
 
         // Live per-job defaults, atomic to avoid data race with concurrent
         // worker-thread reads in Pipeline::init_job_context.

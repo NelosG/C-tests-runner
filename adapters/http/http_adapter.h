@@ -88,6 +88,17 @@ class HttpAdapter : public TestExecutionAdapter {
         std::string progress_url_;  ///< Derived from register_url at start().
         static constexpr size_t kProgressQueueMax = 100;
 
+        // --- Heartbeat re-registration (every 5 min while running) ---
+        // Re-POSTs the node-online event so an orchestrator that restarted /
+        // forgot us repopulates its node table. Idempotent on the
+        // orchestrator side. Disabled when register_url is empty.
+        std::thread heartbeat_thread_;
+        std::mutex heartbeat_mutex_;
+        std::condition_variable heartbeat_cv_;
+        std::atomic<bool> heartbeat_stop_{false};
+        void heartbeat_worker_loop();
+        static constexpr int kHeartbeatIntervalSec = 300;  // 5 min
+
         // Counters for visibility into progress delivery health. All published
         // events are counted (HTTP 2xx); drops are split between "no room in the
         // local queue" (orchestrator can't keep up / engine bursting too fast)

@@ -162,6 +162,7 @@ namespace {
         bootstrap_resource_providers(resource_manager, server_config.defaultResourceProviders);
 
         TestRunnerService runner(build_config, knobs.sandbox, knobs.cpu, resource_manager);
+        runner.set_node_id(node_id);  // embedded in progress events from Pipeline::execute
         AdapterManager adapter_manager(
             runner, cfg.adapters_dir, cfg.config_dir,
             cfg.exe_dir, node_id, &resource_manager

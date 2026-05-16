@@ -14,7 +14,10 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(cpp-httplib)
 
 # HTTP adapter - shared library loaded at runtime
-add_library(http_adapter SHARED http_adapter.cpp)
+add_library(http_adapter SHARED
+        http_adapter.cpp
+        http_adapter_endpoints.cpp
+)
 
 target_include_directories(http_adapter PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}          # http_adapter.h

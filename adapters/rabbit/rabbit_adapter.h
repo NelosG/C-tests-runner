@@ -25,7 +25,7 @@
  *
  * Topology:
  *   Exchange: test.direct (direct)
- *     Queue: test.tasks              <- routing keys "correctness", "performance", "all"
+ *     Queue: test.tasks              <- routing key "task"
  *     Queue: test.results            <- routing key "results"
  *   Exchange: node.fanout (fanout)
  *     Queue: node.events
@@ -50,6 +50,7 @@
 #include <thread>
 #include <unordered_map>
 #include <uv.h>
+#include <vector>
 #include <nlohmann/json.hpp>
 
 class UvAmqpHandler;
@@ -88,8 +89,10 @@ class RabbitAdapter : public TestExecutionAdapter {
         std::unique_ptr<AMQP::Connection> connection_;
         std::unique_ptr<AMQP::Channel> task_channel_;
         std::unique_ptr<AMQP::Channel> status_channel_;
-        std::unique_ptr<AMQP::Channel> publish_channel_;   ///< Topology + general publishes (progress, RPC replies). NOT in confirm mode.
-        std::unique_ptr<AMQP::Channel> result_channel_;    ///< Result publishes ONLY. confirm-select enabled, sequence numbers match broker's.
+        std::unique_ptr<AMQP::Channel>
+        publish_channel_;   ///< Topology + general publishes (progress, RPC replies). NOT in confirm mode.
+        std::unique_ptr<AMQP::Channel>
+        result_channel_;    ///< Result publishes ONLY. confirm-select enabled, sequence numbers match broker's.
 
         // --- State ---
         TestRunnerService& runner_;
@@ -115,17 +118,39 @@ class RabbitAdapter : public TestExecutionAdapter {
             std::string job_id;
             std::chrono::steady_clock::time_point published_at;
         };
+
         std::map<uint64_t, PendingConfirm> pending_confirms_;
         uint64_t next_publish_seq_ = 1;
         uv_timer_t confirm_timeout_timer_{};
         bool confirm_timer_initialized_ = false;
         static constexpr int kConfirmTimeoutSec = 30;
 
+        // --- Reconnect state (event loop thread only) ---
+        bool reconnecting_ = false;
+        int reconnect_attempt_ = 0;
+        uv_timer_t reconnect_timer_{};
+        bool reconnect_timer_initialized_ = false;
+        // Old AMQP objects pending destruction after libuv finishes uv_close
+        // on their inline handles. Drained on next reconnect tick.
+        std::vector<std::unique_ptr<UvAmqpHandler>> handler_graveyard_;
+        std::vector<std::unique_ptr<AMQP::Connection>> connection_graveyard_;
+        static constexpr int kReconnectMinDelayMs = 1000;
+        static constexpr int kReconnectMaxDelayMs = 30000;
+
         // --- Event loop methods ---
         void event_loop_main();
         void setup_channels();
         void declare_topology();
         void start_consumers();
+        /// Initiate a (re)connect to the broker. Runs on event loop thread.
+        /// `is_reconnect` controls logging verbosity.
+        void start_amqp_connect(bool is_reconnect);
+        /// Tear down the current handler/connection/channels and schedule
+        /// a reconnect with exponential backoff. No-op if already in progress
+        /// or if the adapter is stopping.
+        void schedule_reconnect();
+        /// uv_timer callback that retries connect after the backoff delay.
+        static void on_reconnect_timer(uv_timer_t* timer);
 
         // --- Cross-thread communication ---
         void post_to_event_loop(std::function<void()> fn);
@@ -136,8 +161,8 @@ class RabbitAdapter : public TestExecutionAdapter {
         void on_control_message(const AMQP::Message& msg, uint64_t tag, bool redelivered);
 
         // --- Control message dispatch ---
-        using ReplyFn = std::function<void(const std::string &, nlohmann::json)>;
-        using ControlHandler = std::function<void(const nlohmann::json &, const ReplyFn &)>;
+        using ReplyFn = std::function<void(const std::string&, nlohmann::json)>;
+        using ControlHandler = std::function<void(const nlohmann::json&, const ReplyFn&)>;
         std::unordered_map<control_type, ControlHandler> control_handlers_;
         void setup_control_handlers();
 

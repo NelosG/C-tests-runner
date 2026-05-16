@@ -1,11 +1,8 @@
 // Include rabbit_adapter.h first so amqpcpp pulls in winsock2.h before windows.h
 #include <rabbit_adapter.h>
-#include <adapter_status.h>
 #include <adapter_utils.h>
-#include <algorithm>
 #include <api_types.h>
 #include <chrono>
-#include <control_type.h>
 #include <filesystem>
 #include <future>
 #include <iostream>
@@ -112,10 +109,18 @@ void RabbitAdapter::start() {
     uv_async_init(&loop_, &async_handle_, on_async_callback);
     async_handle_.data = this;
 
+    // Initialize the reconnect timer (kept around for the adapter's lifetime,
+    // stopped/restarted on each backoff cycle).
+    uv_timer_init(&loop_, &reconnect_timer_);
+    reconnect_timer_.data = this;
+    reconnect_timer_initialized_ = true;
+
     // Create handler and initiate TCP connection
     handler_ = std::make_unique<UvAmqpHandler>(&loop_);
 
-    // Use promise to synchronize: wait until AMQP connection is ready or fails
+    // Use promise to synchronize: wait until INITIAL AMQP connection is ready
+    // or fails. After the promise is fulfilled, error/ready callbacks are
+    // replaced with the persistent variants that drive auto-reconnect.
     auto ready_promise = std::make_shared<std::promise<bool>>();
     auto ready_future = ready_promise->get_future();
 
@@ -132,12 +137,14 @@ void RabbitAdapter::start() {
     );
 
     handler_->setErrorCallback(
-        [ready_promise](const char* msg) {
+        [this, ready_promise](const char* msg) {
             std::cerr << "[RabbitMQ] Connection error: " << msg << "\n";
             try {
                 ready_promise->set_value(false);
             } catch(...) {
-                // Promise already satisfied (error after ready)
+                // Promise already satisfied -> this is a post-ready failure,
+                // arrange a reconnect from the event-loop thread.
+                schedule_reconnect();
             }
         }
     );
@@ -165,6 +172,105 @@ void RabbitAdapter::start() {
 
     started_ = true;
     std::cout << "[RabbitMQ] Started: event loop + shared JobQueue\n";
+}
+
+// Initiates a *reconnect* - runs on the event-loop thread. Creates a new
+// handler + connection, wires the persistent (no-promise) callbacks, and lets
+// libuv drive the asynchronous handshake. On ready: declare topology and
+// resume consumers. On error: schedule another reconnect with backoff.
+void RabbitAdapter::start_amqp_connect(bool is_reconnect) {
+    if(stop_.load()) return;
+
+    handler_ = std::make_unique<UvAmqpHandler>(&loop_);
+
+    handler_->setReadyCallback(
+        [this]() {
+            try {
+                setup_channels();
+                reconnect_attempt_ = 0;
+                reconnecting_ = false;
+                std::cout << "[RabbitMQ] Reconnected: topology + consumers restored\n";
+            } catch(const std::exception& e) {
+                std::cerr << "[RabbitMQ] Reconnect setup failed: " << e.what() << "\n";
+                schedule_reconnect();
+            }
+        }
+    );
+
+    handler_->setErrorCallback(
+        [this](const char* msg) {
+            std::cerr << "[RabbitMQ] Connection error during reconnect: " << msg << "\n";
+            schedule_reconnect();
+        }
+    );
+
+    handler_->connect(config_.host, config_.port);
+
+    AMQP::Login login(config_.user, config_.password);
+    connection_ = std::make_unique<AMQP::Connection>(handler_.get(), login, config_.vhost);
+    handler_->setConnection(connection_.get());
+
+    if(is_reconnect) {
+        std::cout << "[RabbitMQ] Attempting reconnect (attempt "
+            << (reconnect_attempt_ + 1) << ") to " << config_.host << ":" << config_.port << "\n";
+    }
+}
+
+void RabbitAdapter::schedule_reconnect() {
+    if(stop_.load() || reconnecting_) return;
+    reconnecting_ = true;
+
+    // Tear down channels first - they hold raw pointers into the connection.
+    publish_channel_.reset();
+    result_channel_.reset();
+    task_channel_.reset();
+    status_channel_.reset();
+
+    // Drop tracking maps; broker will redeliver unacked tasks after
+    // consumer_timeout, and unconfirmed publishes were never visible to any
+    // consumer yet.
+    pending_confirms_.clear();
+    job_to_tag_.clear();
+
+    // Move old handler / connection into a graveyard. We do NOT destroy them
+    // immediately - their inline uv_tcp_t / uv_timer_t may still be inside
+    // uv_close(). They are released on the next reconnect tick, by which
+    // time libuv has invoked the close callbacks and the memory is free.
+    if(connection_) {
+        try { connection_->close(); } catch(...) {}
+        connection_graveyard_.push_back(std::move(connection_));
+    }
+    if(handler_) {
+        handler_->shutdown();
+        handler_graveyard_.push_back(std::move(handler_));
+    }
+
+    // Compute backoff. 1s x 2^attempt clamped to [min, max].
+    int delay_ms = kReconnectMinDelayMs * (1 << std::min(reconnect_attempt_, 5));
+    if(delay_ms > kReconnectMaxDelayMs) delay_ms = kReconnectMaxDelayMs;
+
+    std::cout << "[RabbitMQ] Reconnect scheduled in " << delay_ms << "ms\n";
+    uv_timer_stop(&reconnect_timer_);
+    uv_timer_start(
+        &reconnect_timer_,
+        on_reconnect_timer,
+        static_cast<uint64_t>(delay_ms),
+        0
+    );
+}
+
+void RabbitAdapter::on_reconnect_timer(uv_timer_t* timer) {
+    auto* self = static_cast<RabbitAdapter*>(timer->data);
+    if(self->stop_.load()) return;
+
+    // GC the graveyard - at this point libuv has finished closing the old
+    // handler's inline handles (uv_close callbacks ran on prior loop ticks),
+    // so destruction is safe.
+    self->handler_graveyard_.clear();
+    self->connection_graveyard_.clear();
+
+    self->reconnect_attempt_++;
+    self->start_amqp_connect(true);
 }
 
 void RabbitAdapter::notify_online() {
@@ -201,6 +307,14 @@ void RabbitAdapter::stop() {
                     confirm_timer_initialized_ = false;
                 }
 
+                // Stop the reconnect timer too - any in-flight backoff cycle
+                // must not fire start_amqp_connect() while we're tearing down.
+                if(reconnect_timer_initialized_) {
+                    uv_timer_stop(&reconnect_timer_);
+                    uv_close(reinterpret_cast<uv_handle_t*>(&reconnect_timer_), nullptr);
+                    reconnect_timer_initialized_ = false;
+                }
+
                 // Drop tracking maps. In-flight unacked tags will be redelivered
                 // by the broker after consumer_timeout; we do NOT ack them here
                 // since their results may not have been delivered to test.results.
@@ -224,6 +338,13 @@ void RabbitAdapter::stop() {
                 if(!uv_is_closing(reinterpret_cast<uv_handle_t*>(&async_handle_))) {
                     uv_close(reinterpret_cast<uv_handle_t*>(&async_handle_), nullptr);
                 }
+
+                // Release graveyard now: their uv handles either finished
+                // closing long ago (older reconnect cycles) or shutdown() above
+                // already initiated their close. Holding them past loop
+                // teardown would leak.
+                handler_graveyard_.clear();
+                connection_graveyard_.clear();
 
                 done_promise->set_value();
             }
@@ -285,9 +406,9 @@ void RabbitAdapter::stop() {
 
 void RabbitAdapter::setup_channels() {
     publish_channel_ = std::make_unique<AMQP::Channel>(connection_.get());
-    result_channel_  = std::make_unique<AMQP::Channel>(connection_.get());
-    task_channel_    = std::make_unique<AMQP::Channel>(connection_.get());
-    status_channel_  = std::make_unique<AMQP::Channel>(connection_.get());
+    result_channel_ = std::make_unique<AMQP::Channel>(connection_.get());
+    task_channel_ = std::make_unique<AMQP::Channel>(connection_.get());
+    status_channel_ = std::make_unique<AMQP::Channel>(connection_.get());
 
     // Set up error handlers with channel names for diagnostics
     publish_channel_->onError(
@@ -323,27 +444,40 @@ void RabbitAdapter::setup_channels() {
     // Deferred& (no .onAck/.onNack overloads), so the confirm-specific callbacks
     // must be installed first.
     result_channel_->confirmSelect()
-                   .onAck([this](uint64_t delivery_tag, bool multiple) {
-                       on_publish_ack(delivery_tag, multiple);
-                   })
-                   .onNack([this](uint64_t delivery_tag, bool multiple, bool /*requeue*/) {
-                       on_publish_nack(delivery_tag, multiple);
-                   })
-                   .onSuccess([]() {
-                       std::cout << "[RabbitMQ] Publisher confirms enabled on result channel\n";
-                   })
-                   .onError([](const char* msg) {
-                       std::cerr << "[RabbitMQ] confirmSelect failed: " << msg
-                           << " - results will not be confirmed; broker will redeliver on consumer timeout\n";
-                   });
+                   .onAck(
+                       [this](uint64_t delivery_tag, bool multiple) {
+                           on_publish_ack(delivery_tag, multiple);
+                       }
+                   )
+                   .onNack(
+                       [this](uint64_t delivery_tag, bool multiple, bool /*requeue*/) {
+                           on_publish_nack(delivery_tag, multiple);
+                       }
+                   )
+                   .onSuccess(
+                       []() {
+                           std::cout << "[RabbitMQ] Publisher confirms enabled on result channel\n";
+                       }
+                   )
+                   .onError(
+                       [](const char* msg) {
+                           std::cerr << "[RabbitMQ] confirmSelect failed: " << msg
+                               << " - results will not be confirmed; broker will redeliver on consumer timeout\n";
+                       }
+                   );
 
     // Periodic timer for confirm-timeout sweeping (event loop thread).
     if(!confirm_timer_initialized_) {
         uv_timer_init(&loop_, &confirm_timeout_timer_);
         confirm_timeout_timer_.data = this;
-        uv_timer_start(&confirm_timeout_timer_, [](uv_timer_t* t) {
-            static_cast<RabbitAdapter*>(t->data)->scan_confirm_timeouts();
-        }, 5000, 5000); // first tick after 5s, then every 5s
+        uv_timer_start(
+            &confirm_timeout_timer_,
+            [](uv_timer_t* t) {
+                static_cast<RabbitAdapter*>(t->data)->scan_confirm_timeouts();
+            },
+            5000,
+            5000
+        ); // first tick after 5s, then every 5s
         confirm_timer_initialized_ = true;
     }
 
@@ -364,11 +498,11 @@ void RabbitAdapter::declare_topology() {
     // Exchange: node.control.direct (direct) - targeted control per nodeId
     ch.declareExchange("node.control.direct", AMQP::direct, AMQP::durable);
 
-    // Queue: test.tasks (single queue for all task types)
+    // Queue: test.tasks - single routing key "task". Mode (correctness /
+    // performance / all) is read from the assignment's config.json at pipeline
+    // time, not from the routing key, so there is no value in splitting bindings.
     ch.declareQueue("test.tasks", AMQP::durable);
-    ch.bindQueue("test.direct", "test.tasks", "correctness");
-    ch.bindQueue("test.direct", "test.tasks", "performance");
-    ch.bindQueue("test.direct", "test.tasks", "all");
+    ch.bindQueue("test.direct", "test.tasks", "task");
 
     // Queue: test.results - declared by parallel-server consumer side. Runner
     // only publishes here; declaration kept for backward compat / standalone tests.
@@ -483,15 +617,15 @@ void RabbitAdapter::on_task_received(
     // (avoids 30-min consumer_timeout redelivery for cancelled tasks).
     job_to_tag_[job_id] = tag;
 
-    // Inject node_id so pipeline tags progress events with this runner.
-    task["_node_id"] = config_.node_id;
+    // node_id is held by TestRunnerService (set at startup) and threaded
+    // into Pipeline::execute() - no need to inject it into the request JSON.
 
     // Emit "received" progress event (best-effort, before the job even queues).
     {
         nlohmann::json event = {
-            {"jobId",     job_id},
-            {"nodeId",    config_.node_id},
-            {"phase",     "received"},
+            {"jobId", job_id},
+            {"nodeId", config_.node_id},
+            {"phase", "received"},
             {"timestamp", now_iso8601()}
         };
         publish("test.direct", "progress", event);
@@ -501,9 +635,11 @@ void RabbitAdapter::on_task_received(
     auto alive_for_progress = alive_;
     auto on_progress = [this, alive_for_progress](const nlohmann::json& event) {
         if(!alive_for_progress->load()) return;
-        post_to_event_loop([this, event]() {
-            publish("test.direct", "progress", event);
-        });
+        post_to_event_loop(
+            [this, event]() {
+                publish("test.direct", "progress", event);
+            }
+        );
     };
 
     // Extract solution name for acceptance reply
@@ -569,226 +705,7 @@ void RabbitAdapter::on_task_received(
     }
 }
 
-bool RabbitAdapter::require_management(const ReplyFn& reply, control_type ct) {
-    if(management_) return true;
-    reply(response_type(ct), {{"status", "error"}, {"error", "Management API not available"}});
-    return false;
-}
-
-void RabbitAdapter::setup_control_handlers() {
-    control_handlers_[control_type::queue_status] = [this](const nlohmann::json&, const ReplyFn& reply) {
-        reply(response_type(control_type::queue_status), runner_.get_queue_status());
-        std::cout << "[RabbitMQ] Responded to queueStatus\n";
-    };
-
-    control_handlers_[control_type::status_request] = [this](const nlohmann::json&, const ReplyFn& reply) {
-        auto status = adapter_utils::build_node_event(node_event_type::info, config_.node_id, runner_, management_);
-        reply("statusResponse", status);
-        std::cout << "[RabbitMQ] Responded to statusRequest\n";
-    };
-
-    control_handlers_[control_type::list_adapters] = [this](const nlohmann::json&, const ReplyFn& reply) {
-        if(!require_management(reply, control_type::list_adapters)) return;
-        const char* json_str = management_->list_adapters(management_->context);
-        if(!json_str) {
-            reply(
-                response_type(control_type::list_adapters),
-                {{"adapters", nlohmann::json::array()}, {"error", "Failed to list adapters"}}
-            );
-            return;
-        }
-        auto adapters = nlohmann::json::parse(json_str);
-        management_->free_string(management_->context, json_str);
-        reply(response_type(control_type::list_adapters), {{"adapters", adapters}});
-        std::cout << "[RabbitMQ] Responded to listAdapters\n";
-    };
-
-    control_handlers_[control_type::load_adapter] = [this](const nlohmann::json& parsed, const ReplyFn& reply) {
-        if(!require_management(reply, control_type::load_adapter)) return;
-        std::string adapter_name = parsed.value("adapter", "");
-        nlohmann::json config = parsed.value("config", nlohmann::json::object());
-        bool ok = management_->load_adapter(management_->context, adapter_name.c_str(), config);
-        nlohmann::json resp = {
-            {"adapter", adapter_name},
-            {"status", to_string(ok ? adapter_status::started : adapter_status::failed)}
-        };
-        if(!ok) resp["error"] = "Failed to load adapter '" + adapter_name + "'. Check server logs.";
-        reply(response_type(control_type::load_adapter), resp);
-        std::cout << "[RabbitMQ] loadAdapter '" << adapter_name << "': "
-            << (ok ? "ok" : "failed") << "\n";
-    };
-
-    control_handlers_[control_type::list_available_adapters] = [this](const nlohmann::json&, const ReplyFn& reply) {
-        if(!require_management(reply, control_type::list_available_adapters)) return;
-        auto available = adapter_utils::filter_available_adapters(management_);
-        reply(response_type(control_type::list_available_adapters), {{"adapters", available}});
-        std::cout << "[RabbitMQ] Responded to listAvailableAdapters\n";
-    };
-
-    control_handlers_[control_type::unload_adapter] = [this](const nlohmann::json& parsed, const ReplyFn& reply) {
-        if(!require_management(reply, control_type::unload_adapter)) return;
-        std::string adapter_name = parsed.value("adapter", "");
-        bool ok = management_->unload_adapter(management_->context, adapter_name.c_str());
-        nlohmann::json resp = {
-            {"adapter", adapter_name},
-            {"status", to_string(ok ? adapter_status::stopped : adapter_status::failed)}
-        };
-        if(!ok) resp["error"] = "Adapter '" + adapter_name + "' not found or not running";
-        reply(response_type(control_type::unload_adapter), resp);
-        std::cout << "[RabbitMQ] unloadAdapter '" << adapter_name << "': "
-            << (ok ? "ok" : "failed") << "\n";
-    };
-
-    control_handlers_[control_type::update_config] = [this](
-        const nlohmann::json& parsed,
-        const ReplyFn& reply
-    ) {
-        // Canonical shape (same as HTTP PUT /api/config):
-        //   { "type":"updateConfig", "config": { <ConfigUpdateRequest> } }
-        auto cfg = parsed.value("config", nlohmann::json::object());
-        if(!cfg.is_object() || cfg.empty()) {
-            reply(
-                response_type(control_type::update_config),
-                {{"status", to_string(response_status::error)}, {"error", "Missing or empty 'config' object"}}
-            );
-            return;
-        }
-        auto [ok, err] = adapter_utils::apply_config(runner_, cfg);
-        if(!ok) {
-            reply(
-                response_type(control_type::update_config),
-                {{"status", to_string(response_status::error)}, {"error", err}}
-            );
-            return;
-        }
-        std::cout << "[RabbitMQ] updateConfig: " << cfg.dump() << "\n";
-        reply(response_type(control_type::update_config), runner_.get_queue_status());
-    };
-
-    control_handlers_[control_type::cancel_job] = [this](const nlohmann::json& parsed, const ReplyFn& reply) {
-        std::string job_id = parsed.value("jobId", "");
-        if(job_id.empty()) {
-            reply(
-                response_type(control_type::cancel_job),
-                {{"status", to_string(response_status::error)}, {"error", "Missing jobId"}}
-            );
-            return;
-        }
-        bool ok = runner_.cancel(job_id);
-        if(ok) {
-            // Cancel succeeded - JobQueue dropped the queued job and erased
-            // its completion callback, so on_complete will never fire and
-            // never publish-and-ack. Ack the consume tag here so the broker
-            // doesn't redeliver a cancelled task after consumer_timeout.
-            auto it = job_to_tag_.find(job_id);
-            if(it != job_to_tag_.end()) {
-                if(task_channel_) task_channel_->ack(it->second);
-                job_to_tag_.erase(it);
-            }
-        }
-        nlohmann::json resp = {
-            {"jobId", job_id},
-            {"status", ok ? to_string(job_status::cancelled) : to_string(response_status::error)}
-        };
-        if(!ok) resp["error"] = "Cannot cancel job (not queued or not found)";
-        reply(response_type(control_type::cancel_job), resp);
-        std::cout << "[RabbitMQ] cancelJob '" << job_id << "': "
-            << (ok ? "cancelled" : "failed") << "\n";
-    };
-
-    control_handlers_[control_type::get_job_info] = [this](const nlohmann::json& parsed, const ReplyFn& reply) {
-        std::string job_id = parsed.value("jobId", "");
-        if(job_id.empty()) {
-            reply(
-                response_type(control_type::get_job_info),
-                {{"status", to_string(response_status::error)}, {"error", "Missing jobId"}}
-            );
-            return;
-        }
-        try {
-            auto info = runner_.get_job_info(job_id);
-            reply(response_type(control_type::get_job_info), adapter_utils::build_job_info_json(info));
-        } catch(const std::exception& e) {
-            reply(
-                response_type(control_type::get_job_info),
-                {
-                    {"jobId", job_id},
-                    {"status", to_string(response_status::error)},
-                    {"error", e.what()}
-                }
-            );
-        }
-        std::cout << "[RabbitMQ] getJobInfo '" << job_id << "'\n";
-    };
-
-    control_handlers_[control_type::list_resource_providers] = [this](const nlohmann::json&, const ReplyFn& reply) {
-        if(!require_management(reply, control_type::list_resource_providers)) return;
-        const char* json_str = management_->list_resource_providers(management_->context);
-        if(!json_str) {
-            reply(
-                response_type(control_type::list_resource_providers),
-                {{"providers", nlohmann::json::array()}, {"error", "Failed to list resource providers"}}
-            );
-            return;
-        }
-        auto providers = nlohmann::json::parse(json_str);
-        management_->free_string(management_->context, json_str);
-        reply(response_type(control_type::list_resource_providers), {{"providers", providers}});
-        std::cout << "[RabbitMQ] Responded to listResourceProviders\n";
-    };
-
-    control_handlers_[control_type::list_available_resource_providers] = [this](
-        const nlohmann::json&,
-        const ReplyFn& reply
-    ) {
-            if(!require_management(reply, control_type::list_available_resource_providers)) return;
-            const char* json_str = management_->list_available_resource_providers(management_->context);
-            if(!json_str) {
-                reply(
-                    response_type(control_type::list_available_resource_providers),
-                    {{"providers", nlohmann::json::array()}, {"error", "Failed to list available resource providers"}}
-                );
-                return;
-            }
-            auto providers = nlohmann::json::parse(json_str);
-            management_->free_string(management_->context, json_str);
-            reply(response_type(control_type::list_available_resource_providers), {{"providers", providers}});
-            std::cout << "[RabbitMQ] Responded to listAvailableResourceProviders\n";
-        };
-
-    control_handlers_[control_type::load_resource_provider] = [this
-        ](const nlohmann::json& parsed, const ReplyFn& reply) {
-            if(!require_management(reply, control_type::load_resource_provider)) return;
-            std::string provider_name = parsed.value("provider", "");
-            nlohmann::json config = parsed.value("config", nlohmann::json::object());
-            bool ok = management_->load_resource_provider(management_->context, provider_name.c_str(), config);
-            nlohmann::json resp = {
-                {"provider", provider_name},
-                {"status", to_string(ok ? adapter_status::started : adapter_status::failed)}
-            };
-            if(!ok) resp["error"] = "Failed to load resource provider '" + provider_name + "'. Check server logs.";
-            reply(response_type(control_type::load_resource_provider), resp);
-            std::cout << "[RabbitMQ] loadResourceProvider '" << provider_name << "': "
-                << (ok ? "ok" : "failed") << "\n";
-        };
-
-    control_handlers_[control_type::unload_resource_provider] = [this](
-        const nlohmann::json& parsed,
-        const ReplyFn& reply
-    ) {
-            if(!require_management(reply, control_type::unload_resource_provider)) return;
-            std::string provider_name = parsed.value("provider", "");
-            bool ok = management_->unload_resource_provider(management_->context, provider_name.c_str());
-            nlohmann::json resp = {
-                {"provider", provider_name},
-                {"status", to_string(ok ? adapter_status::stopped : adapter_status::failed)}
-            };
-            if(!ok) resp["error"] = "Resource provider '" + provider_name + "' not found or not running";
-            reply(response_type(control_type::unload_resource_provider), resp);
-            std::cout << "[RabbitMQ] unloadResourceProvider '" << provider_name << "': "
-                << (ok ? "ok" : "failed") << "\n";
-        };
-}
+// require_management() + setup_control_handlers() live in rabbit_adapter_rpc.cpp.
 
 void RabbitAdapter::on_control_message(const AMQP::Message& msg, uint64_t, bool) {
     std::string body(msg.body(), msg.bodySize());
@@ -871,7 +788,9 @@ void RabbitAdapter::publish_result_with_confirm(
     // monotonic from 1 and matches our next_publish_seq_ exactly.
     uint64_t my_seq = next_publish_seq_++;
     pending_confirms_[my_seq] = PendingConfirm{
-        consume_tag, job_id, std::chrono::steady_clock::now()
+        consume_tag,
+        job_id,
+        std::chrono::steady_clock::now()
     };
 
     std::string body = message.dump();
@@ -943,7 +862,10 @@ void RabbitAdapter::scan_confirm_timeouts() {
     auto threshold = std::chrono::seconds(kConfirmTimeoutSec);
     int requeued = 0;
     for(auto it = pending_confirms_.begin(); it != pending_confirms_.end();) {
-        if(now - it->second.published_at < threshold) { ++it; continue; }
+        if(now - it->second.published_at < threshold) {
+            ++it;
+            continue;
+        }
         uint64_t seq = it->first;
         std::string job_id = it->second.job_id;
         ++it;

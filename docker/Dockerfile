@@ -1,3 +1,6 @@
+# syntax=docker/dockerfile:1.4
+# (1.4+ enables the RUN --mount=type=cache directive used below.)
+
 # ============================================
 # Stage 1: Build engine
 # ============================================
@@ -26,15 +29,23 @@ COPY parallel_lib/ parallel_lib/
 COPY runner_lib/ runner_lib/
 COPY adapters/ adapters/
 COPY resource/ resource/
-COPY tools/ tools/
-COPY tests/ tests/
+# tools/ and tests/ are dev-only (mock orchestrators, example test plugins,
+# sample student solution). Not copied into the production image; the engine
+# build skips them via -DBUILD_DEV_EXTRAS=OFF.
 
-RUN cmake -S . -B build -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=/opt/ctr \
-    && cmake --build build -j$(nproc) \
-    && cmake --install build \
-    && rm -rf build
+# BuildKit cache mount: the CMake build tree persists across `docker compose
+# build` invocations in BuildKit's storage (NOT in the final image). When one
+# .cpp changes, Ninja recompiles only the affected TUs + re-links - turns a
+# 3+ min full rebuild into ~30s incremental. `sharing=locked` serialises
+# concurrent docker builds on the same cache. The install step writes into
+# /opt/ctr (regular layer), so the artifacts end up in the image as before.
+RUN --mount=type=cache,target=/src/build,sharing=locked \
+    cmake -S . -B /src/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/opt/ctr \
+        -DBUILD_DEV_EXTRAS=OFF \
+    && cmake --build /src/build -j$(nproc) \
+    && cmake --install /src/build
 
 # ============================================
 # Stage 2: Install OpenCilk (reusable layer)
@@ -96,6 +107,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Layer ordering rule: stable layers FIRST, the volatile builder COPY LAST.
+# Layer cache invalidation cascades down - putting the builder copy at the
+# bottom keeps everything above it cached when only C++ source changes.
+
 # isolate (IOI sandbox) - overlay full staged install (binary + helpers + config + box dir)
 COPY --from=isolate /opt/isolate-stage/ /
 # v2.3+ requires an 'isolate' user with a sub[ug]id range for user-namespace
@@ -107,13 +122,13 @@ RUN chmod u+s /usr/bin/isolate \
     && echo 'isolate:100000:65536' >> /etc/subuid \
     && echo 'isolate:100000:65536' >> /etc/subgid
 
-# Engine binaries + libs + headers
-COPY --from=builder /opt/ctr /opt/ctr
-
-# OpenCilk compiler (for cilk framework student builds)
+# OpenCilk compiler (~1 GB, stable across C++ source changes - placed here
+# so the COPY is cached on every rebuild that doesn't touch the opencilk stage).
 COPY --from=opencilk /opt/opencilk /opt/opencilk
 
-# Config dir: mount via docker-compose volume (docker/config/ -> /opt/ctr/config/)
+# Config dir: empty placeholder for the docker-compose volume mount
+# (docker/config/ -> /opt/ctr/config/). Done before the builder COPY so the
+# directory exists; COPY merges /opt/ctr from the builder alongside this dir.
 RUN mkdir -p /opt/ctr/config
 
 ENV PATH="/opt/opencilk/bin:/opt/ctr:${PATH}" \
@@ -127,6 +142,10 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Engine binaries + libs + headers - VOLATILE: invalidates on every C++ source
+# change. Kept last so all stable layers above stay cached on rebuild.
+COPY --from=builder /opt/ctr /opt/ctr
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["server"]

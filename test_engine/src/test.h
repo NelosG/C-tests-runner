@@ -18,26 +18,33 @@
 #include <utility>
 
 class Test {
-public:
-    using SetupFn  = std::function<void(TestData& input)>;
-    using VerifyFn = std::function<std::pair<bool, std::string>(
-        const TestData& input, const TestData& output)>;
+    public:
+        using SetupFn = std::function<void(TestData& input)>;
+        // verify gets const refs - TestData::read_* are non-consuming, so verify
+        // lambdas can re-read keys idempotently. Peak-memory savings happen on
+        // the runner side via runner::read_* (parse + erase).
+        using VerifyFn = std::function<std::pair<bool, std::string>(
+            const TestData& input,
+            const TestData& output
+        )>;
 
-    Test(std::string name, SetupFn setup, VerifyFn verify)
-        : name(std::move(name)), setup_(std::move(setup)), verify_(std::move(verify)) {}
+        Test(std::string name, SetupFn setup, VerifyFn verify)
+            : name(std::move(name)), setup_(std::move(setup)), verify_(std::move(verify)) {}
 
-    std::string name;
+        std::string name;
 
-    void setup(TestData& input) const {
-        if(setup_) setup_(input);
-    }
+        void setup(TestData& input) const {
+            if(setup_) setup_(input);
+        }
 
-    std::pair<bool, std::string> verify(
-        const TestData& input, const TestData& output) const {
-        return verify_(input, output);
-    }
+        std::pair<bool, std::string> verify(
+            const TestData& input,
+            const TestData& output
+        ) const {
+            return verify_(input, output);
+        }
 
-private:
-    SetupFn  setup_;
-    VerifyFn verify_;
+    private:
+        SetupFn setup_;
+        VerifyFn verify_;
 };

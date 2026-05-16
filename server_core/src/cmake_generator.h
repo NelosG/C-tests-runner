@@ -22,13 +22,16 @@ class CMakeGenerator {
             std::string engine_include_path;
             std::string parallel_lib_path;
             std::string parallel_include_path;
-            std::string runner_lib_path;             ///< Path to librunner_lib.a (base, public API in runner.h)
-            std::string runner_include_path;         ///< Path to runner_lib/include (single include dir for runner_lib + variants)
+            std::string runner_lib_path;             ///< Path to librunner_lib.a (base, framework-agnostic)
+            std::string
+            runner_include_path;         ///< Path to runner_lib/include (single include dir for runner_lib + variants)
             std::string shadow_omp_dir;              ///< Path to parallel_lib/shadow/
-            std::string runner_omp_lib_path;         ///< Path to librunner_omp.a
-            std::string runner_parlay_lib_path;      ///< Path to librunner_parlay.a
-            std::string runner_cilk_lib_path;        ///< Path to librunner_cilk.a
-            std::string runner_seq_lib_path;         ///< Path to librunner_seq.a (framework=none)
+            // Per-framework runner *sources* - compiled at student-build time with the
+            // same compiler that compiles the student's solution.
+            std::string runner_omp_source_path;      ///< Path to runner_omp.cpp source
+            std::string runner_parlay_source_path;   ///< Path to runner_parlay.cpp source
+            std::string runner_cilk_source_path;     ///< Path to runner_cilk.cpp source
+            std::string runner_seq_source_path;      ///< Path to runner_seq.cpp source
             std::string parlay_headers_path;         ///< Path to ParlayLib headers (parlay/ subdir)
             std::string template_dir;                ///< Directory containing runner_wrapper.cmake.in etc.
         };

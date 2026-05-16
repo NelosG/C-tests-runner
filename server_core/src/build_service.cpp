@@ -12,15 +12,16 @@
 
 namespace fs = std::filesystem;
 
+
 namespace {
 
-#ifdef _WIN32
+    #ifdef _WIN32
     constexpr const char* SHARED_LIB_EXT = ".dll";
     constexpr const char* EXE_EXT = ".exe";
-#else
+    #else
     constexpr const char* SHARED_LIB_EXT = ".so";
     constexpr const char* EXE_EXT = "";
-#endif
+    #endif
 
     std::atomic<int> temp_counter{0};
 
@@ -71,8 +72,8 @@ namespace {
             const std::string name = it->path().filename().string();
             const bool engine_owned =
                 name.rfind("build-runner-", 0) == 0
-                || name.rfind("tests-",        0) == 0
-                || name.rfind("ctr-sandbox-",  0) == 0;
+                || name.rfind("tests-", 0) == 0
+                || name.rfind("ctr-sandbox-", 0) == 0;
             if(!engine_owned) continue;
 
             auto mtime = fs::last_write_time(it->path(), op_ec);
@@ -124,7 +125,8 @@ namespace {
             auto t = fs::last_write_time(it->path(), op_ec);
             if(op_ec) continue;
             auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                t.time_since_epoch()).count();
+                t.time_since_epoch()
+            ).count();
             if(ns > max_ns) max_ns = ns;
         }
         return max_ns;
@@ -133,6 +135,39 @@ namespace {
     // ------------------------------------------------------------------
     // CMake invocation
     // ------------------------------------------------------------------
+
+    /// Returns the shell prefix that runs the following command inside a fresh
+    /// network namespace ("unshare --net -r -- ") or "" when unavailable.
+    ///
+    /// The kernel-level netns drops outbound network for the cmake configure /
+    /// build subprocess: any FetchContent / git clone / curl / find_package
+    /// that tries to reach a host fails with ENETUNREACH. This is the primary
+    /// defence on Linux against student CMake files that bypass the regex
+    /// CMakeValidator (e.g. via include() of an absolute path). The in-CMake
+    /// block_network.cmake remains as a second layer + Windows-only defence.
+    ///
+    /// Probe runs once at first invocation; result cached for the engine's
+    /// lifetime. -r maps current uid to 0 inside a user-namespace so the call
+    /// works both as root (privileged docker) and unprivileged (WSL/dev box).
+    const std::string& network_isolated_prefix() {
+        #ifndef __linux__
+        static const std::string none;
+        return none;
+        #else
+        static const std::string prefix = [] {
+            auto r = run_command("unshare --net -r /bin/true 2>&1");
+            if(!r.failed()) {
+                LOG("Build") << "Build-time network isolation active "
+                    "(unshare --net -r)\n";
+                return std::string("unshare --net -r -- ");
+            }
+            LOG("Build") << "unshare --net probe failed - falling back to "
+                "block_network.cmake only. Output: " << r.output;
+            return std::string();
+        }();
+        return prefix;
+        #endif
+    }
 
     std::string cmake_configure_and_build(
         const std::string& cmake_executable,
@@ -143,8 +178,10 @@ namespace {
         const std::string& extra_defines = ""
     ) {
         std::string output;
+        const std::string& netns = network_isolated_prefix();
 
-        std::string configure_cmd = shell_quote(cmake_executable) + " "
+        std::string configure_cmd = netns
+            + shell_quote(cmake_executable) + " "
             + "-G " + shell_quote(generator) + " "
             + "-DCMAKE_BUILD_TYPE=" CTR_BUILD_TYPE " "
             + extra_defines
@@ -158,7 +195,8 @@ namespace {
             return output;
         }
 
-        std::string build_cmd = shell_quote(cmake_executable) + " "
+        std::string build_cmd = netns
+            + shell_quote(cmake_executable) + " "
             + "--build " + shell_quote(build_dir.string()) + " "
             + "--config " CTR_BUILD_TYPE
             + " 2>&1";
@@ -177,14 +215,16 @@ namespace {
     /// Probe whether the given clang++ supports -fopencilk. Guards against the
     /// "OPENCILK_PATH points to a vanilla clang" trap.
     bool supports_fopencilk(const std::string& compiler_path) {
-        auto probe = run_command(shell_quote(compiler_path)
+        auto probe = run_command(
+            shell_quote(compiler_path)
             + " -fopencilk -E -x c++ "
-#ifdef _WIN32
+            #ifdef _WIN32
             "NUL"
-#else
+            #else
             "/dev/null"
-#endif
-            " 2>&1");
+            #endif
+            " 2>&1"
+        );
         // Compiler that doesn't know -fopencilk prints "unrecognized option" / "unknown argument"
         // and exits non-zero with the flag name in the message.
         return !probe.failed() || probe.output.find("fopencilk") == std::string::npos;
@@ -200,8 +240,8 @@ namespace {
         if(probe.failed()) return {};
         std::string dir = probe.output;
         while(!dir.empty()
-              && (dir.back() == '\n' || dir.back() == '\r'
-                  || dir.back() == ' ' || dir.back() == '\t')) {
+            && (dir.back() == '\n' || dir.back() == '\r'
+                || dir.back() == ' ' || dir.back() == '\t')) {
             dir.pop_back();
         }
         if(dir.empty() || !fs::is_directory(dir)) return {};
@@ -244,8 +284,11 @@ namespace {
         fs::path build;           ///< root/build  - CMake build tree
     };
 
-    bool stage_student_solution(const fs::path& solution_dir, RunnerWorkspace& ws,
-                              std::string& error_out) {
+    bool stage_student_solution(
+        const fs::path& solution_dir,
+        RunnerWorkspace& ws,
+        std::string& error_out
+    ) {
         std::error_code ec;
         copy_directory_recursive(solution_dir, ws.solution, ec);
         if(ec) {
@@ -261,13 +304,19 @@ namespace {
 
     /// Copy the static `block_network.cmake` from the engine's template dir
     /// into the workspace, so the wrapper CMakeLists can `include(...)` it.
-    void write_network_blocker(const RunnerWorkspace& ws,
-                              const std::string& template_dir) {
+    void write_network_blocker(
+        const RunnerWorkspace& ws,
+        const std::string& template_dir
+    ) {
         fs::path src = fs::path(template_dir) / "block_network.cmake";
         std::error_code ec;
         if(fs::exists(src, ec) && !ec) {
-            fs::copy_file(src, ws.root / "block_network.cmake",
-                          fs::copy_options::overwrite_existing, ec);
+            fs::copy_file(
+                src,
+                ws.root / "block_network.cmake",
+                fs::copy_options::overwrite_existing,
+                ec
+            );
             if(!ec) return;
         }
         // Fallback: write a minimal blocker if the file isn't shipped (dev
@@ -282,9 +331,11 @@ namespace {
         std::vector<std::string> extra_lib_dirs;
     };
 
-    bool collect_teacher_test_artifacts(const std::string& test_dir,
-                                     TeacherTestArtifacts& out,
-                                     std::string& error_out) {
+    bool collect_teacher_test_artifacts(
+        const std::string& test_dir,
+        TeacherTestArtifacts& out,
+        std::string& error_out
+    ) {
         out.runner_main = fs::absolute(fs::path(test_dir) / "runner" / "main.cpp");
         if(!fs::exists(out.runner_main)) {
             error_out = "runner/main.cpp not found in test directory: " + test_dir;
@@ -311,8 +362,10 @@ namespace {
 
     /// Compose -D definitions for the cmake configure step.
     /// For cilk, sets CMAKE_CXX_COMPILER / CMAKE_C_COMPILER to the cached OpenCilk clang.
-    std::string build_cmake_defines(const std::string& framework,
-                                  const std::string& cilk_compiler_path) {
+    std::string build_cmake_defines(
+        const std::string& framework,
+        const std::string& cilk_compiler_path
+    ) {
         std::string defines =
             "-DFETCHCONTENT_FULLY_DISCONNECTED=ON "
             "-DFETCHCONTENT_UPDATES_DISCONNECTED=ON ";
@@ -324,7 +377,7 @@ namespace {
             // path with spaces (e.g. "/opt/open cilk/bin/clang++") survives
             // the run_command() shell pass without being split into two args.
             defines += "-DCMAKE_CXX_COMPILER=" + shell_quote(cilk_compiler_path) + " "
-                    +  "-DCMAKE_C_COMPILER="   + shell_quote(cilk_c) + " ";
+                + "-DCMAKE_C_COMPILER=" + shell_quote(cilk_c) + " ";
         }
         return defines;
     }
@@ -348,9 +401,11 @@ namespace {
     /// Copy framework-specific runtime libs (currently only parallel_lib for openmp)
     /// next to the runner exe so the sandbox can load them. test_engine is intentionally
     /// NOT copied - it is loaded only by test plugins, never by the runner exe.
-    void copy_runner_runtime_deps(const std::string& runner_exe,
-                               const std::string& framework,
-                               const std::string& parallel_lib_path) {
+    void copy_runner_runtime_deps(
+        const std::string& runner_exe,
+        const std::string& framework,
+        const std::string& parallel_lib_path
+    ) {
         if(framework != "openmp" || parallel_lib_path.empty()) return;
         fs::path src(parallel_lib_path);
         if(!fs::exists(src)) return;
@@ -368,7 +423,8 @@ namespace {
 
 BuildService::BuildService(BuildConfig config)
     : config_(config),
-      cmake_gen_(CMakeGenerator::Config{
+      cmake_gen_(
+          CMakeGenerator::Config{
               config.engine_lib_path,
               config.engine_include_path,
               config.parallel_lib_path,
@@ -376,16 +432,16 @@ BuildService::BuildService(BuildConfig config)
               config.runner_lib_path,
               config.runner_include_path,
               config.shadow_omp_dir,
-              config.runner_omp_lib_path,
-              config.runner_parlay_lib_path,
-              config.runner_cilk_lib_path,
-              config.runner_seq_lib_path,
+              config.runner_omp_source_path,
+              config.runner_parlay_source_path,
+              config.runner_cilk_source_path,
+              config.runner_seq_source_path,
               config.parlay_headers_path,
               config.template_dir
-          }),
+          }
+      ),
       cilk_compiler_path_(find_opencilk_compiler()),
-      cilk_runtime_dir_(find_cilk_runtime_dir(cilk_compiler_path_))
-{
+      cilk_runtime_dir_(find_cilk_runtime_dir(cilk_compiler_path_)) {
     // Seed live atomic defaults from the initial config snapshot.
     default_memory_limit_mb_.store(config_.default_memory_limit_mb, std::memory_order_relaxed);
     default_threads_.store(config_.default_threads, std::memory_order_relaxed);
@@ -427,23 +483,27 @@ std::pair<bool, std::string> BuildService::validate_framework(const std::string&
     if(framework == "openmp") {
         if(!fs::exists(config_.parallel_lib_path))
             return {false, "parallel_lib not found: " + config_.parallel_lib_path};
-        if(!fs::exists(config_.runner_omp_lib_path))
-            return {false, "runner_omp not found: " + config_.runner_omp_lib_path};
+        if(!fs::exists(config_.runner_omp_source_path))
+            return {false, "runner_omp source not found: " + config_.runner_omp_source_path};
         if(!fs::is_directory(config_.shadow_omp_dir))
             return {false, "shadow_omp dir not found: " + config_.shadow_omp_dir};
     } else if(framework == "parlay") {
-        if(!fs::exists(config_.runner_parlay_lib_path))
-            return {false, "runner_parlay not found (build with -DENABLE_PARLAY=ON)"};
+        if(!fs::exists(config_.runner_parlay_source_path))
+            return {
+                false,
+                "runner_parlay source not found (build with -DENABLE_PARLAY=ON): "
+                + config_.runner_parlay_source_path
+            };
         if(config_.parlay_headers_path.empty() || !fs::is_directory(config_.parlay_headers_path))
             return {false, "ParlayLib headers not found"};
     } else if(framework == "cilk") {
-        if(!fs::exists(config_.runner_cilk_lib_path))
-            return {false, "runner_cilk not found"};
+        if(!fs::exists(config_.runner_cilk_source_path))
+            return {false, "runner_cilk source not found: " + config_.runner_cilk_source_path};
         if(cilk_compiler_path_.empty())
             return {false, "OpenCilk compiler not found. Set OPENCILK_PATH env or install to /opt/opencilk"};
     } else if(framework == "none") {
-        if(!fs::exists(config_.runner_seq_lib_path))
-            return {false, "runner_seq not found: " + config_.runner_seq_lib_path};
+        if(!fs::exists(config_.runner_seq_source_path))
+            return {false, "runner_seq source not found: " + config_.runner_seq_source_path};
     } else {
         return {false, "Unknown framework: " + framework};
     }
@@ -486,9 +546,9 @@ BuildService::RunnerBuildResult BuildService::build_runner(
         << " (framework=" << framework << ")\n";
 
     RunnerWorkspace ws;
-    ws.root     = make_fresh_temp_dir("build-runner-", job_id);
+    ws.root = make_fresh_temp_dir("build-runner-", job_id);
     ws.solution = ws.root / "solution";
-    ws.build    = ws.root / "build";
+    ws.build = ws.root / "build";
     result.build_dir = ws.root.string();
 
     if(!stage_student_solution(solution_dir, ws, result.error_message))
@@ -506,7 +566,8 @@ BuildService::RunnerBuildResult BuildService::build_runner(
             test_artifacts.runner_main.string(),
             test_artifacts.include_dir,
             test_artifacts.extra_lib_dirs,
-            shadow_omp);
+            shadow_omp
+        );
         std::ofstream f(ws.root / "CMakeLists.txt");
         f << cmake_text;
     }
@@ -573,7 +634,10 @@ BuildService::TestPluginBuildResult BuildService::build_test_plugins(
     if(!hit_paths.empty()) {
         bool all_present = true;
         for(const auto& p : hit_paths) {
-            if(!fs::exists(p)) { all_present = false; break; }
+            if(!fs::exists(p)) {
+                all_present = false;
+                break;
+            }
         }
         if(all_present) {
             LOG("Build") << "Test plugins cache hit for " << abs_test_dir << "\n";
@@ -629,7 +693,7 @@ BuildService::TestPluginBuildResult BuildService::build_test_plugins(
             std::string filename = it->path().filename().string();
             // Match both "plugin_*.dll/.so" and "libplugin_*.so" - teacher
             // may or may not set PREFIX "" on the target.
-            const bool plugin_prefix    = filename.rfind("plugin_", 0) == 0;
+            const bool plugin_prefix = filename.rfind("plugin_", 0) == 0;
             const bool libplugin_prefix = filename.rfind("libplugin_", 0) == 0;
             if(plugin_prefix || libplugin_prefix) {
                 result.plugin_paths.push_back(it->path().string());
@@ -656,19 +720,24 @@ BuildService::TestPluginBuildResult BuildService::build_test_plugins(
             dirs_to_cleanup.push_back(std::move(it->second.build_dir));
         }
         plugin_cache_[abs_test_dir] = PluginCacheEntry{
-            result.plugin_paths, result.build_dir, current_mtime,
+            result.plugin_paths,
+            result.build_dir,
+            current_mtime,
             std::chrono::steady_clock::now()
         };
 
         // LRU eviction: trim down to kPluginCacheMax. Never evict the entry we
         // just inserted (special-case in the comparator).
         while(plugin_cache_.size() > kPluginCacheMax) {
-            auto oldest = std::min_element(plugin_cache_.begin(), plugin_cache_.end(),
+            auto oldest = std::min_element(
+                plugin_cache_.begin(),
+                plugin_cache_.end(),
                 [&](const auto& a, const auto& b) {
                     if(a.first == abs_test_dir) return false;
                     if(b.first == abs_test_dir) return true;
                     return a.second.last_access < b.second.last_access;
-                });
+                }
+            );
             if(oldest == plugin_cache_.end() || oldest->first == abs_test_dir) break;
             if(!oldest->second.build_dir.empty()) {
                 dirs_to_cleanup.push_back(std::move(oldest->second.build_dir));

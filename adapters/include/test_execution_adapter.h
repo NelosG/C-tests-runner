@@ -8,6 +8,7 @@
  * identifiers used by all transport adapters that handle test execution.
  */
 
+#include <iomanip>
 #include <random>
 #include <sstream>
 #include <string>
@@ -29,13 +30,18 @@ class TestExecutionAdapter : public TransportAdapter {
             return ss.str();
         }
 
-        /// Generate a bearer auth token: "tok-<32 hex digits>" (128-bit entropy).
+        /// Generate a bearer auth token: "tok-<64 hex digits>" (256-bit entropy).
+        /// Reads directly from std::random_device - backed by /dev/urandom on
+        /// Linux and BCryptGenRandom on Windows - so the token is not
+        /// recoverable from any other engine output. Do NOT route this through
+        /// mt19937: a single leaked sample fully determines the next 19937 bits.
         static std::string generate_auth_token() {
-            std::uniform_int_distribution<uint32_t> dist;
+            std::random_device rd;
             std::ostringstream ss;
-            ss << "tok-" << std::hex
-                << dist(rng()) << dist(rng())
-                << dist(rng()) << dist(rng());
+            ss << "tok-" << std::hex << std::setfill('0');
+            for(int i = 0; i < 8; ++i) {
+                ss << std::setw(8) << rd();  // 8 * 32 = 256 bits
+            }
             return ss.str();
         }
 

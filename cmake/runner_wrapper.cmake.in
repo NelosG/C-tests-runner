@@ -32,7 +32,14 @@ endif()
 add_executable(runner "@RUNNER_MAIN_PATH@")
 target_link_libraries(runner PRIVATE student_solution @RUNNER_VARIANT@ runner_lib)
 target_include_directories(runner PRIVATE "@TEST_INCLUDE_DIR@")
-set_target_properties(runner PROPERTIES BUILD_RPATH_USE_ORIGIN ON)
+# Explicit BUILD_RPATH=$ORIGIN: libstudent_solution.so + libparallel_lib.so
+# (for omp) sit next to the runner exe inside isolate's /runner bind-mount;
+# we want ld.so to find them via the binary's own path at run time, not via
+# LD_LIBRARY_PATH alone (which we DO also set but redundancy is cheap).
+set_target_properties(runner PROPERTIES
+    BUILD_RPATH "$ORIGIN"
+    BUILD_RPATH_USE_ORIGIN ON
+)
 set_target_properties(student_solution PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}

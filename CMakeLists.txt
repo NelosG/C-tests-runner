@@ -77,10 +77,18 @@ add_subdirectory(parallel_lib)   # Student-facing OpenMP wrappers (shared lib)
 add_subdirectory(test_engine)    # Lightweight plugin API (shared lib, no ext deps)
 add_subdirectory(server_core)    # Server infrastructure (shared lib, links test_engine + deps)
 add_subdirectory(runner_lib)    # Runner I/O + timing (static lib for student builds)
-add_subdirectory(tests)          # Example test plugins (DLLs)
 add_subdirectory(adapters)       # Transport adapters: HTTP, RabbitMQ (DLLs)
 add_subdirectory(resource)       # Resource providers: git, local (DLLs)
-add_subdirectory(tools)          # CLI tools and mock orchestrators
+
+# Dev-only artifacts - example test plugins, sample student solution, mock
+# orchestrators. Not part of the production engine image; teacher/student
+# bring their own. Default ON for local dev (so `cmake --build .` smoke-tests
+# the whole tree); set BUILD_DEV_EXTRAS=OFF in production builds (Dockerfile).
+option(BUILD_DEV_EXTRAS "Build example test plugins, sample solution, and mock orchestrators" ON)
+if(BUILD_DEV_EXTRAS)
+    add_subdirectory(tests)      # Example test plugins (DLLs) + sample student solution
+    add_subdirectory(tools)      # Mock HTTP / RabbitMQ orchestrators (dev only)
+endif()
 
 # ============================================
 # Server executable - loads adapter DLLs at runtime
@@ -118,6 +126,20 @@ file(COPY ${CMAKE_SOURCE_DIR}/test_engine/src/ DESTINATION ${OUTPUT_DIR}/include
 file(COPY ${CMAKE_SOURCE_DIR}/parallel_lib/include/ DESTINATION ${OUTPUT_DIR}/include/parallel_lib)
 file(COPY ${CMAKE_SOURCE_DIR}/parallel_lib/shadow/ DESTINATION ${OUTPUT_DIR}/include/shadow_omp)
 file(COPY ${CMAKE_SOURCE_DIR}/runner_lib/include/ DESTINATION ${OUTPUT_DIR}/include/runner_lib)
+
+# Per-framework runner sources mirrored to OUTPUT_DIR so local dev (cli/server
+# run from output-Debug-*/) finds them at the same relative path as the
+# installed Docker image (/opt/ctr/runner_lib/<variant>/src/runner_<variant>.cpp).
+file(COPY ${CMAKE_SOURCE_DIR}/runner_lib/omp/src/    DESTINATION ${OUTPUT_DIR}/runner_lib/omp/src
+     FILES_MATCHING PATTERN "*.cpp")
+file(COPY ${CMAKE_SOURCE_DIR}/runner_lib/cilk/src/   DESTINATION ${OUTPUT_DIR}/runner_lib/cilk/src
+     FILES_MATCHING PATTERN "*.cpp")
+file(COPY ${CMAKE_SOURCE_DIR}/runner_lib/seq/src/    DESTINATION ${OUTPUT_DIR}/runner_lib/seq/src
+     FILES_MATCHING PATTERN "*.cpp")
+if(ENABLE_PARLAY)
+    file(COPY ${CMAKE_SOURCE_DIR}/runner_lib/parlay/src/ DESTINATION ${OUTPUT_DIR}/runner_lib/parlay/src
+         FILES_MATCHING PATTERN "*.cpp")
+endif()
 if(ENABLE_PARLAY)
     file(COPY ${parlaylib_SOURCE_DIR}/include/parlay DESTINATION ${OUTPUT_DIR}/include)
 endif()
@@ -174,11 +196,19 @@ install(DIRECTORY server_core/src/
 )
 install(DIRECTORY parallel_lib/include/ DESTINATION include/parallel_lib)
 install(DIRECTORY parallel_lib/shadow/ DESTINATION include/shadow_omp FILES_MATCHING PATTERN "*.h")
-set(_runner_targets runner_lib runner_omp runner_cilk runner_seq)
+# Only runner_lib (base, framework-agnostic) is pre-built and installed as an
+# archive. Framework variants (runner_omp/parlay/cilk/seq) are compiled per-job
+# at student-build time with the same compiler that builds the student's
+# solution (see CMakeGenerator::FRAMEWORK_BLOCK). We ship their sources here.
+install(TARGETS runner_lib ARCHIVE DESTINATION .)
+
+# Per-framework runner sources (compiled per-job at student-build time)
+install(DIRECTORY runner_lib/omp/src/    DESTINATION runner_lib/omp/src    FILES_MATCHING PATTERN "*.cpp")
+install(DIRECTORY runner_lib/cilk/src/   DESTINATION runner_lib/cilk/src   FILES_MATCHING PATTERN "*.cpp")
+install(DIRECTORY runner_lib/seq/src/    DESTINATION runner_lib/seq/src    FILES_MATCHING PATTERN "*.cpp")
 if(ENABLE_PARLAY)
-    list(APPEND _runner_targets runner_parlay)
+    install(DIRECTORY runner_lib/parlay/src/ DESTINATION runner_lib/parlay/src FILES_MATCHING PATTERN "*.cpp")
 endif()
-install(TARGETS ${_runner_targets} ARCHIVE DESTINATION .)
 
 install(DIRECTORY runner_lib/include/ DESTINATION include/runner_lib FILES_MATCHING PATTERN "*.h")
 if(ENABLE_PARLAY)

@@ -10,25 +10,35 @@ TestRunnerService::TestRunnerService(
       sandbox_(std::move(sandbox_config)),
       cpu_isolator_(std::move(cpu_config)),
       test_executor_(sandbox_, cpu_isolator_),
-      queue_(std::make_unique<JobQueue>(
-          JobQueue::JobExecutor{},
-          build_service_.config().correctness_workers)),
-      pipeline_(build_service_, test_executor_, resource_manager,
-                *queue_)
-{
+      queue_(
+          std::make_unique<JobQueue>(
+              JobQueue::JobExecutor{},
+              build_service_.config().correctness_workers
+          )
+      ),
+      pipeline_(
+          build_service_,
+          test_executor_,
+          resource_manager,
+          *queue_
+      ) {
     // Wire the queue's executor to Pipeline::execute now that both exist.
     queue_->set_executor(
-        [this](const nlohmann::json& req,
-               std::function<void(job_status)> updater,
-               progress::callback on_progress) {
-            return pipeline_.execute(req, std::move(updater), std::move(on_progress));
+        [this](
+        const nlohmann::json& req,
+        std::function<void(job_status)> updater,
+        progress::callback on_progress
+    ) {
+            return pipeline_.execute(req, node_id_, std::move(updater), std::move(on_progress));
         }
     );
 }
 
-std::string TestRunnerService::submit(nlohmann::json request,
-                                      CompletionCallback on_complete,
-                                      progress::callback on_progress) {
+std::string TestRunnerService::submit(
+    nlohmann::json request,
+    CompletionCallback on_complete,
+    progress::callback on_progress
+) {
     return queue_->submit(std::move(request), std::move(on_complete), std::move(on_progress));
 }
 
