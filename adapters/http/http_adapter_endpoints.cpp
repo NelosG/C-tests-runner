@@ -120,27 +120,38 @@ void HttpAdapter::setup_test_routes() {
                 // to runner-generated id if absent - same logic as JobQueue).
                 std::string client_job_id = json.value("jobId", "");
                 if(!client_job_id.empty()) {
-                    enqueue_progress({
-                        {"jobId",     client_job_id},
-                        {"nodeId",    config_.node_id},
-                        {"phase",     "received"},
-                        {"timestamp", now_iso8601()}
-                    });
+                    enqueue_progress(
+                        {
+                            {"jobId", client_job_id},
+                            {"nodeId", config_.node_id},
+                            {"phase", "received"},
+                            {"timestamp", now_iso8601()}
+                        }
+                    );
                 }
 
-                auto on_progress = [this](const nlohmann::json& event) {
+                // alive_ guards against use-after-free: if HttpAdapter::stop()
+                // has set alive_ = false, the JobQueue worker calling us must
+                // not touch this->progress_queue_ / progress_mutex_ - those
+                // are members and may already be in destruction. on_complete
+                // uses the same pattern.
+                auto alive_for_progress = alive_;
+                auto on_progress = [this, alive_for_progress](const nlohmann::json& event) {
+                    if(!alive_for_progress->load()) return;
                     enqueue_progress(event);
                 };
 
                 auto job_id = runner_.submit(std::move(json), std::move(on_complete), std::move(on_progress));
                 // If the client did not supply jobId, the runner generated one - emit "received" now.
                 if(client_job_id.empty()) {
-                    enqueue_progress({
-                        {"jobId",     job_id},
-                        {"nodeId",    config_.node_id},
-                        {"phase",     "received"},
-                        {"timestamp", now_iso8601()}
-                    });
+                    enqueue_progress(
+                        {
+                            {"jobId", job_id},
+                            {"nodeId", config_.node_id},
+                            {"phase", "received"},
+                            {"timestamp", now_iso8601()}
+                        }
+                    );
                 }
                 auto info = runner_.get_job_info(job_id);
 
@@ -218,12 +229,14 @@ void HttpAdapter::setup_test_routes() {
         }
     );
 
-    svr_.Get(
-        "/api/health",
-        [](const httplib::Request&, httplib::Response& res) {
-            res.set_content(R"({"status":"ok"})", "application/json");
-        }
-    );
+    // /api/health and /api/health/ - both registered so the route also exists
+    // when a probe appends a trailing slash. The auth middleware is already
+    // forgiving about either; the route table needs the same.
+    auto health_handler = [](const httplib::Request&, httplib::Response& res) {
+        res.set_content(R"({"status":"ok"})", "application/json");
+    };
+    svr_.Get("/api/health", health_handler);
+    svr_.Get("/api/health/", health_handler);
 
     // GET /api/node/status - detailed node status for orchestrator polling
     svr_.Get(
@@ -323,6 +336,19 @@ void HttpAdapter::setup_management_routes() {
         R"(/api/adapters/([a-zA-Z0-9_-]+))",
         [this](const httplib::Request& req, httplib::Response& res) {
             std::string adapter = req.matches[1];
+
+            // Sub-path collision guard: cpp-httplib resolves GET vs POST
+            // independently, so `POST /api/adapters/available` lands here
+            // with adapter="available". Reject so we don't try to dlopen
+            // a plugin named "available".
+            if(adapter == "available") {
+                res.status = 400;
+                res.set_content(
+                    R"({"error":"'available' is reserved; use GET /api/adapters/available"})",
+                    "application/json"
+                );
+                return;
+            }
 
             nlohmann::json config;
             if(!req.body.empty()) {
@@ -432,6 +458,17 @@ void HttpAdapter::setup_management_routes() {
         R"(/api/resource-providers/([a-zA-Z0-9_-]+))",
         [this](const httplib::Request& req, httplib::Response& res) {
             std::string provider = req.matches[1];
+
+            // See the adapters analogue: reject "available" so the GET-only
+            // sub-resource doesn't get reinterpreted as a load request.
+            if(provider == "available") {
+                res.status = 400;
+                res.set_content(
+                    R"({"error":"'available' is reserved; use GET /api/resource-providers/available"})",
+                    "application/json"
+                );
+                return;
+            }
 
             nlohmann::json config;
             if(!req.body.empty()) {

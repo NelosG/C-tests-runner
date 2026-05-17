@@ -135,13 +135,16 @@ ENV PATH="/opt/opencilk/bin:/opt/ctr:${PATH}" \
     LD_LIBRARY_PATH="/opt/ctr:/opt/opencilk/lib" \
     OPENCILK_PATH="/opt/opencilk"
 
-EXPOSE 8080
+EXPOSE 8090
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD wget -qO- http://localhost:8080/api/health >/dev/null 2>&1 || exit 1
+    CMD wget -qO- http://localhost:8090/api/health >/dev/null 2>&1 || exit 1
 
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Strip CR from CRLF line endings (Windows hosts with core.autocrlf=true ship
+# the file with CRLF, which makes the kernel see `#!/bin/sh\r` and fail with
+# "exec /entrypoint.sh: no such file or directory").
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 # Engine binaries + libs + headers - VOLATILE: invalidates on every C++ source
 # change. Kept last so all stable layers above stay cached on rebuild.

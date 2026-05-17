@@ -6,8 +6,7 @@ namespace {
     auto verify_inclusive_scan = [](
         const TestData& in,
         const TestData& out
-    )
-        -> std::pair<bool, std::string> {
+    ) -> std::pair<bool, std::string> {
         auto input = in.read_array<long long>("array");
         auto output = out.read_array<long long>("result");
         if(input.size() != output.size())

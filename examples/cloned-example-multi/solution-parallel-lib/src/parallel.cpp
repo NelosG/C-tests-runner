@@ -21,8 +21,7 @@ namespace parallel {
 
         std::vector<long long> chunk_sums(static_cast<std::size_t>(num_threads) + 1, 0);
 
-        OMP_PARALLEL(num_threads(num_threads))
-        {
+        OMP_PARALLEL(num_threads(num_threads)) {
             const int tid = par::thread_id();
             const std::size_t s = static_cast<std::size_t>(tid) * chunk;
             const std::size_t e = std::min(s + chunk, n);

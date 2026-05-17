@@ -7,7 +7,7 @@ services:
     environment:
       - NODE_ID=docker-node
     ports:
-      - "8090:8080"
+      - "8090:8090"
     # isolate needs CAP_SYS_ADMIN to create namespaces and write cgroup limits.
     # cgroup: host gives access to host's cgroup v2 hierarchy.
     privileged: true

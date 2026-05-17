@@ -91,6 +91,36 @@ if(BUILD_DEV_EXTRAS)
 endif()
 
 # ============================================
+# Unit tests - opt-in via -DBUILD_UNIT_TESTS=ON
+# Each module owns its own test/ subdirectory; bin output goes to a separate
+# unit_tests/ dir so test executables don't pollute OUTPUT_DIR.
+# ============================================
+option(BUILD_UNIT_TESTS "Build unit tests (GoogleTest)" OFF)
+if(BUILD_UNIT_TESTS)
+    FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG v1.15.2
+            EXCLUDE_FROM_ALL
+    )
+    # gtest on Windows links the runtime statically by default; match our /MD.
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
+    enable_testing()
+    include(GoogleTest)
+
+    # Common output dir for unit test executables (kept out of OUTPUT_DIR).
+    set(UNIT_TESTS_OUTPUT_DIR ${CMAKE_BINARY_DIR}/unit_tests)
+    file(MAKE_DIRECTORY ${UNIT_TESTS_OUTPUT_DIR})
+
+    add_subdirectory(test_engine/test)
+    add_subdirectory(server_core/test)
+    add_subdirectory(runner_lib/test)
+    add_subdirectory(parallel_lib/test)
+endif()
+
+# ============================================
 # Server executable - loads adapter DLLs at runtime
 # ============================================
 add_executable(server server.cpp)

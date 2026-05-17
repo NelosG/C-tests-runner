@@ -11,9 +11,7 @@ RUNNER_MAIN {
 
     RUNNER_EXECUTE{
         student::analyze(array, require_positive, sum, max_val, ok);
-    
-    
-    
+
     };
 
     runner::write_value<long long>("sum", sum);

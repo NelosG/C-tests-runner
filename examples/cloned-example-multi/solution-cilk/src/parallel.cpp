@@ -24,11 +24,7 @@ namespace parallel {
         std::vector<long long> block_sums(num_blocks + 1, 0);
 
         // Phase 1: per-block local prefix sum (parallel).
-        cilk_for(std::size_t b = 0;
-        b < num_blocks;
-        ++b
-        )
-        {
+        cilk_for(std::size_t b = 0; b < num_blocks; ++b) {
             std::size_t s = b * block_size;
             std::size_t e = std::min(s + block_size, n);
             long long acc = 0;
@@ -45,11 +41,7 @@ namespace parallel {
         }
 
         // Phase 3: distribute offsets (block 0 already correct).
-        cilk_for(std::size_t b = 1;
-        b < num_blocks;
-        ++b
-        )
-        {
+        cilk_for(std::size_t b = 1; b < num_blocks; ++b) {
             std::size_t s = b * block_size;
             std::size_t e = std::min(s + block_size, n);
             long long off = block_sums[b];

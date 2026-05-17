@@ -9,8 +9,12 @@
 
 /// Forward declaration: definition lives further down (used by start() and
 /// progress_worker_loop() which appear before it in source order).
-static void parse_url(const std::string& raw, std::string& scheme,
-                      std::string& host_port, std::string& path);
+static void parse_url(
+    const std::string& raw,
+    std::string& scheme,
+    std::string& host_port,
+    std::string& path
+);
 
 // ============================================================================
 // HttpAdapter
@@ -65,7 +69,11 @@ HttpAdapter::HttpAdapter(TestRunnerService& runner, const ManagementAPI* managem
     // Bearer token auth middleware - reject unauthorized requests (except GET /api/health)
     svr_.set_pre_routing_handler(
         [this](const httplib::Request& req, httplib::Response& res) -> httplib::Server::HandlerResponse {
-            if(req.method == "GET" && req.path == "/api/health") {
+            // Accept both /api/health and /api/health/ - cpp-httplib does not
+            // normalize trailing slashes, and probes from various monitoring
+            // tools (Docker HEALTHCHECK, k8s probe, curl) may add one.
+            if(req.method == "GET"
+                && (req.path == "/api/health" || req.path == "/api/health/")) {
                 return httplib::Server::HandlerResponse::Unhandled;
             }
             std::string expected = "Bearer " + auth_token_;
@@ -148,7 +156,6 @@ void HttpAdapter::start() {
         throw std::runtime_error("[HTTP] Failed to listen - " + reason);
     }
     std::cout << "[HTTP] Listening on 0.0.0.0:" << config_.port << "\n";
-
 }
 
 void HttpAdapter::notify_online() {
@@ -211,8 +218,11 @@ void HttpAdapter::heartbeat_worker_loop() {
     while(true) {
         std::unique_lock lock(heartbeat_mutex_);
         // Wake on stop OR after the interval, whichever comes first.
-        heartbeat_cv_.wait_for(lock, std::chrono::seconds(kHeartbeatIntervalSec),
-                               [this] { return heartbeat_stop_.load(); });
+        heartbeat_cv_.wait_for(
+            lock,
+            std::chrono::seconds(kHeartbeatIntervalSec),
+            [this] { return heartbeat_stop_.load(); }
+        );
         if(heartbeat_stop_.load()) return;
         lock.unlock();
 
@@ -266,7 +276,7 @@ void HttpAdapter::progress_worker_loop() {
     auto client = make_client();
     auto period_start = std::chrono::steady_clock::now();
     uint64_t period_published = 0;
-    uint64_t period_dropped   = 0;
+    uint64_t period_dropped = 0;
 
     auto log_period_stats = [&](bool force) {
         auto now = std::chrono::steady_clock::now();
@@ -282,17 +292,21 @@ void HttpAdapter::progress_worker_loop() {
                 << drop_pct << "%)\n";
         }
         period_published = 0;
-        period_dropped   = 0;
-        period_start     = now;
+        period_dropped = 0;
+        period_start = now;
     };
 
     while(true) {
         nlohmann::json event;
         {
             std::unique_lock lock(progress_mutex_);
-            progress_cv_.wait_for(lock, std::chrono::seconds(5), [this]() {
-                return progress_stop_.load() || !progress_queue_.empty();
-            });
+            progress_cv_.wait_for(
+                lock,
+                std::chrono::seconds(5),
+                [this]() {
+                    return progress_stop_.load() || !progress_queue_.empty();
+                }
+            );
             if(progress_stop_.load() && progress_queue_.empty()) {
                 log_period_stats(true);
                 uint64_t pub = progress_published_.load(std::memory_order_relaxed);

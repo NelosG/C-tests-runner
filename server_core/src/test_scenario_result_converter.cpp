@@ -48,32 +48,37 @@ nlohmann::json TestScenarioResultConverter::to_grouped_json(
                     run["message"] = tr.message;
                 }
 
-                // Stats sub-object: timing + performance metrics
+                // Stats sub-object: timing + performance metrics.
+                // work_ms / span_ms / parallelism / computeEfficiency are only
+                // meaningful when work/span were actually measured (OpenMP
+                // monitor/stress mode). For cilk/parlay/seq and OpenMP perf mode
+                // (monitor=normal) work_ns is 0, so we omit those fields rather
+                // than reporting bogus zeros.
                 double work_ms = static_cast<double>(tr.work_ns) / 1e6;
-                double span_ms = static_cast<double>(tr.span_ns) / 1e6;
-                double parallelism = (tr.span_ns > 0)
-                    ? static_cast<double>(tr.work_ns) / static_cast<double>(tr.span_ns)
-                    : 0.0;
                 double speedup = (tr.time_ms > 0.0) ? t1_ms / tr.time_ms : 0.0;
                 double efficiency = (r.threads > 0) ? speedup / r.threads : 0.0;
 
                 nlohmann::json stats = {
                     {"timeMs", tr.time_ms},
-                    {"workMs", work_ms},
-                    {"spanMs", span_ms},
-                    {"parallelism", parallelism},
                     {"speedup", speedup},
                     {"efficiency", efficiency}
                 };
 
-                // Compute efficiency: work / (time * threads) - fraction of CPU doing useful work
-                if(tr.time_ms > 0.0 && r.threads > 0) {
-                    stats["computeEfficiency"] = static_cast<double>(tr.work_ns)
-                        / (tr.time_ms * 1e6 * r.threads);
+                if(tr.work_ns > 0) {
+                    stats["workMs"] = work_ms;
+                    stats["spanMs"] = static_cast<double>(tr.span_ns) / 1e6;
+                    if(tr.span_ns > 0) {
+                        stats["parallelism"] = static_cast<double>(tr.work_ns)
+                            / static_cast<double>(tr.span_ns);
+                    }
+                    if(tr.time_ms > 0.0 && r.threads > 0) {
+                        stats["computeEfficiency"] = static_cast<double>(tr.work_ns)
+                            / (tr.time_ms * 1e6 * r.threads);
+                    }
                 }
 
-                // Task granularity
-                if(tr.tasks_created > 0) {
+                // Task granularity - requires monitored work too.
+                if(tr.work_ns > 0 && tr.tasks_created > 0) {
                     stats["avgTaskWorkMs"] = work_ms / tr.tasks_created;
                 }
 
