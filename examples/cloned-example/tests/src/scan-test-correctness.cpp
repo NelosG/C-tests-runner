@@ -6,7 +6,10 @@ class ScanCorrectnessTest final : public TestScenarioExtension {
             return {
                 {
                     "1e7",
+
                     setup::random_array<long long>("array", 10000000),
+
+
                     [](const TestData& in, const TestData& out) -> std::pair<bool, std::string> {
                         auto input = in.read_array<long long>("array");
                         auto output = out.read_array<long long>("result");

@@ -165,13 +165,16 @@ void HttpAdapter::notify_online() {
         stop();
         throw std::runtime_error("[HTTP] apiKey is required for orchestrator registration (set in http.json)");
     }
+
+    // Initial registration is best-effort: a temporarily unreachable
+    // orchestrator must not prevent this adapter from starting. The heartbeat
+    // loop below keeps retrying at kRegistrationRetryIntervalSec until it
+    // succeeds, then switches to the long heartbeat cadence.
     if(!do_register()) {
-        stop();
-        throw std::runtime_error("[HTTP] Registration with orchestrator failed");
+        std::cerr << "[HTTP] Initial registration failed; adapter is running,"
+            << " will retry every " << kRegistrationRetryIntervalSec << "s\n";
     }
 
-    // Start the periodic re-registration heartbeat. Only meaningful after the
-    // initial register succeeded; on failure we never get here.
     heartbeat_thread_ = std::thread([this]() { heartbeat_worker_loop(); });
 }
 
@@ -216,20 +219,27 @@ void HttpAdapter::stop() {
 void HttpAdapter::heartbeat_worker_loop() {
     if(config_.register_url.empty()) return;
     while(true) {
+        // Pick wait interval based on registration state: while not yet
+        // registered, retry quickly so we recover within ~30s of the
+        // orchestrator coming online. After success, fall back to the
+        // standard heartbeat cadence (idempotent re-POST to repopulate a
+        // restarted orchestrator's node table).
+        int interval = registered_.load()
+            ? kHeartbeatIntervalSec
+            : kRegistrationRetryIntervalSec;
+
         std::unique_lock lock(heartbeat_mutex_);
-        // Wake on stop OR after the interval, whichever comes first.
         heartbeat_cv_.wait_for(
             lock,
-            std::chrono::seconds(kHeartbeatIntervalSec),
+            std::chrono::seconds(interval),
             [this] { return heartbeat_stop_.load(); }
         );
         if(heartbeat_stop_.load()) return;
         lock.unlock();
 
         // do_register() is best-effort: returns false on transport / 4xx / 5xx
-        // and logs. We don't propagate the failure here - the next heartbeat
-        // tick will try again. registered_ stays true regardless so
-        // do_deregister() still fires on shutdown.
+        // and logs. Failure simply keeps registered_ at its current value;
+        // the next tick will try again at the appropriate cadence.
         do_register();
     }
 }
@@ -396,6 +406,8 @@ static void parse_url(
 bool HttpAdapter::do_register() {
     if(config_.register_url.empty()) return true;
 
+    bool was_registered = registered_.load();
+
     // Do not log register_url - it can carry user-info if the operator put
     // credentials in the URL. The operator can read it from http.json directly.
     std::cout << "[HTTP] Attempting registration via POST"
@@ -406,6 +418,7 @@ bool HttpAdapter::do_register() {
 
     auto body = adapter_utils::build_node_event(node_event_type::online, config_.node_id, runner_, management_);
 
+    bool success = false;
     try {
         httplib::Client client(scheme + "://" + host_port);
         client.set_connection_timeout(config_.registration_timeout_sec);
@@ -418,18 +431,14 @@ bool HttpAdapter::do_register() {
         if(!res) {
             std::cerr << "[HTTP] Registration request failed: "
                 << httplib::to_string(res.error()) << "\n";
-            return false;
-        }
-
-        if(res->status == 200) {
+        } else if(res->status == 200) {
             try {
                 auto resp = nlohmann::json::parse(res->body);
                 if(resp.value("status", "") == "registered") {
-                    registered_ = true;
-                    std::cout << "[HTTP] Registration confirmed by orchestrator\n";
-                    return true;
+                    success = true;
+                } else {
+                    std::cerr << "[HTTP] Unexpected registration response: " << res->body << "\n";
                 }
-                std::cerr << "[HTTP] Unexpected registration response: " << res->body << "\n";
             } catch(const std::exception& e) {
                 std::cerr << "[HTTP] Invalid registration response JSON: " << e.what() << "\n";
             }
@@ -440,7 +449,18 @@ bool HttpAdapter::do_register() {
         std::cerr << "[HTTP] Registration error: " << e.what() << "\n";
     }
 
-    return false;
+    // registered_ is the single source of truth for the heartbeat cadence and
+    // for whether do_deregister() fires on shutdown. Update it from every
+    // attempt: a failed heartbeat must downgrade us so the loop retries at the
+    // short interval until contact is restored.
+    registered_.store(success);
+    if(success) {
+        std::cout << "[HTTP] Registration confirmed by orchestrator\n";
+    } else if(was_registered) {
+        std::cerr << "[HTTP] Lost registration with orchestrator; will retry every "
+            << kRegistrationRetryIntervalSec << "s\n";
+    }
+    return success;
 }
 
 void HttpAdapter::do_deregister() {

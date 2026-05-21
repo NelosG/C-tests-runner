@@ -2,32 +2,38 @@
 
 /**
  * @file thread_counts.h
- * @brief Helper to determine thread counts based on test mode.
+ * @brief Helper to determine thread counts based on machine capacity.
  */
 
-#include <api_types.h>
-#include <string>
 #include <vector>
 
 
 namespace ThreadCounts {
 
     /**
- * @brief Determine which thread counts to test based on mode.
- * @param mode "correctness" | "performance" | "all"
- * @param max_threads Maximum thread count available.
- * @return Vector of thread counts for TestEngine::execute().
- */
-    inline std::vector<int> get(const std::string& mode, int max_threads) {
-        if(mode == to_string(test_mode::performance)) {
-            if(max_threads > 1) return {1, max_threads};
-            return {1};
+     * @brief Pick thread counts to sweep over.
+     *
+     * Powers of two from 1 up to max_threads. If max_threads itself is not a
+     * power of two, it is appended so we always measure the actual ceiling.
+     *
+     *   max=1  -> {1}
+     *   max=4  -> {1, 2, 4}
+     *   max=7  -> {1, 2, 4, 7}
+     *   max=16 -> {1, 2, 4, 8, 16}
+     *   max=20 -> {1, 2, 4, 8, 16, 20}
+     *
+     * The same ladder is used for correctness and performance modes - the only
+     * difference between them is which scenarios run, not how many cores.
+     */
+    inline std::vector<int> get(int max_threads) {
+        if(max_threads < 1) max_threads = 1;
+        std::vector<int> counts;
+        for(int n = 1; n <= max_threads; n *= 2) {
+            counts.push_back(n);
         }
-        // "correctness" or "all"
-        std::vector<int> counts = {1};
-        if(max_threads >= 2) counts.push_back(2);
-        if(max_threads >= 4) counts.push_back(4);
-        if(max_threads > 4) counts.push_back(max_threads);
+        if(counts.back() != max_threads) {
+            counts.push_back(max_threads);
+        }
         return counts;
     }
 

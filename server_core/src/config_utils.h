@@ -50,6 +50,7 @@ namespace config {
         int defaultCpuTimeSec = 30;                ///< Default cpu-time limit when request has no `cpuTimeSec`.
         int sandboxProcessMultiplier =
             2;          ///< max_processes = threads * multiplier (unless `maxProcesses` is in request).
+        std::optional<int> jobRetentionSeconds;    ///< How long terminal jobs stay in the queue. nullopt -> JobQueue's built-in default.
 
         static ServerConfig load(const std::filesystem::path& path) {
             auto json = read_json_file(path);
@@ -81,6 +82,9 @@ namespace config {
             }
             if(json.contains("defaultCpuTimeSec") && json["defaultCpuTimeSec"].is_number_integer()) {
                 cfg.defaultCpuTimeSec = json["defaultCpuTimeSec"].get<int>();
+            }
+            if(json.contains("jobRetentionSeconds") && json["jobRetentionSeconds"].is_number_integer()) {
+                cfg.jobRetentionSeconds = json["jobRetentionSeconds"].get<int>();
             }
             if(json.contains("sandbox") && json["sandbox"].is_object()) {
                 const auto& sb = json["sandbox"];

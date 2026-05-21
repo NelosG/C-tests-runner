@@ -94,6 +94,7 @@ TEST(ServerConfigLoad, defaults_when_file_missing) {
     EXPECT_EQ(cfg.defaultWallTimeSec, 60);
     EXPECT_EQ(cfg.defaultCpuTimeSec, 30);
     EXPECT_EQ(cfg.sandboxProcessMultiplier, 2);
+    EXPECT_FALSE(cfg.jobRetentionSeconds.has_value());
 }
 
 TEST(ServerConfigLoad, parses_complete_well_typed_file) {
@@ -109,6 +110,7 @@ TEST(ServerConfigLoad, parses_complete_well_typed_file) {
         "defaultThreads": 16,
         "defaultWallTimeSec": 120,
         "defaultCpuTimeSec": 60,
+        "jobRetentionSeconds": 900,
         "sandbox": { "processMultiplier": 3 }
     })"
     );
@@ -123,6 +125,8 @@ TEST(ServerConfigLoad, parses_complete_well_typed_file) {
     EXPECT_EQ(cfg.defaultThreads, 16);
     EXPECT_EQ(cfg.defaultWallTimeSec, 120);
     EXPECT_EQ(cfg.defaultCpuTimeSec, 60);
+    ASSERT_TRUE(cfg.jobRetentionSeconds.has_value());
+    EXPECT_EQ(*cfg.jobRetentionSeconds, 900);
     EXPECT_EQ(cfg.sandboxProcessMultiplier, 3);
 }
 

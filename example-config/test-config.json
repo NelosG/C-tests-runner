@@ -1,0 +1,22 @@
+{
+    "name": "Example Assignment",
+    "mode": "all",
+    "allowedFrameworks": [
+        "openmp",
+        "parlay",
+        "cilk"
+    ],
+    "allowedPackages": [
+        "OpenMP",
+        "parallel_lib",
+        "parlay",
+        "parlaylib",
+        "Cilk"
+    ],
+    "correctnessMode": "stress",
+    "threads": 4,
+    "memoryLimitMb": 1024,
+    "wallTimeSec": 60,
+    "cpuTimeSec": 30,
+    "maxProcesses": 16
+}

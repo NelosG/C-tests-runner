@@ -1,0 +1,63 @@
+#include <quick_sort.h>
+
+#include <algorithm>
+#include <ctime>
+#include <omp.h>
+#include <random>
+
+
+namespace parallel {
+
+    // Cut-off below which we stop spawning tasks - recursion stays in one thread.
+    constexpr int BLOCK = 1'000;
+
+    int partition(std::vector<long long>& array, const int low, const int high) {
+        const long long pivot = array[high];
+
+        int i = low - 1;
+        for(int j = low; j <= high - 1; ++j) {
+            if(array[j] <= pivot) {
+                ++i;
+                std::swap(array[i], array[j]);
+            }
+        }
+        std::swap(array[i + 1], array[high]);
+        return i + 1;
+    }
+
+    int partition_r(std::vector<long long>& array, const int low, const int high, std::mt19937& gen) {
+        const int mod = high - low;
+        const int random = low + (static_cast<int>(gen()) % mod + mod) % mod;
+        std::swap(array[random], array[high]);
+        return partition(array, low, high);
+    }
+
+    void do_qsort(std::vector<long long>& array, int low, int high, std::mt19937& gen) {
+        if(low >= high) return;
+        const int q = partition_r(array, low, high, gen);
+
+        if(high - low < BLOCK) {
+            do_qsort(array, low, q - 1, gen);
+            do_qsort(array, q + 1, high, gen);
+        } else {
+            #pragma omp task default(none) shared(array, gen) firstprivate(low, q)
+            do_qsort(array, low, q - 1, gen);
+            #pragma omp task default(none) shared(array, gen) firstprivate(q, high)
+            do_qsort(array, q + 1, high, gen);
+        }
+    }
+
+    void qsort(std::vector<long long>& array) {
+        std::mt19937 gen(static_cast<std::uint32_t>(std::clock()));
+        const int high = static_cast<int>(array.size()) - 1;
+
+        // The implicit barrier at the end of `omp single` waits for all child
+        // tasks spawned inside it, so no explicit `taskwait` is needed here.
+        #pragma omp parallel default(none) shared(array, gen) firstprivate(high)
+        {
+            #pragma omp single
+            do_qsort(array, 0, high, gen);
+        }
+    }
+
+} // namespace parallel

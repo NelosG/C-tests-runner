@@ -73,9 +73,33 @@ void Pipeline::step_parse_config(JobContext& ctx) const {
     // framework (sequential / std::thread only). FrameworkDetector handles it.
     ctx.add_step("parseConfig", "ok", ctx.step_ms());
 
+    // Resource cap cascade. init_job_context() already applied request-or-
+    // server-default. Here we let the assignment fill in slots the request
+    // did NOT specify - preserving the priority chain:
+    //   orchestrator request > test-config.json > server.json default.
+    const auto& req = ctx.request;
+    const auto& a   = ctx.assignment_config;
+    if(!req.contains("threads")       && a.threads)         ctx.threads         = *a.threads;
+    if(!req.contains("memoryLimitMb") && a.memory_limit_mb) ctx.memory_limit_mb = *a.memory_limit_mb;
+    if(!req.contains("wallTimeSec")   && a.wall_time_sec)   ctx.wall_time_sec   = *a.wall_time_sec;
+    if(!req.contains("cpuTimeSec")    && a.cpu_time_sec)    ctx.cpu_time_sec    = *a.cpu_time_sec;
+    // max_processes is derived from threads*multiplier when nothing pins it.
+    // We must recompute that derivation against the possibly-overridden
+    // ctx.threads, otherwise a test-config threads bump would leave the stale
+    // server-default value behind.
+    if(!req.contains("maxProcesses")) {
+        if(a.max_processes) ctx.max_processes = *a.max_processes;
+        else ctx.max_processes = ctx.threads * build_service_.sandbox_process_multiplier();
+    }
+
     ctx.mode = ctx.assignment_config.mode;
     ctx.result["mode"] = ctx.mode;
-    ctx.result["effectiveParams"]["mode"] = ctx.mode;
+    ctx.result["effectiveParams"]["mode"]           = ctx.mode;
+    ctx.result["effectiveParams"]["threads"]        = ctx.threads;
+    ctx.result["effectiveParams"]["memoryLimitMb"]  = ctx.memory_limit_mb;
+    ctx.result["effectiveParams"]["wallTimeSec"]    = ctx.wall_time_sec;
+    ctx.result["effectiveParams"]["cpuTimeSec"]     = ctx.cpu_time_sec;
+    ctx.result["effectiveParams"]["maxProcesses"]   = ctx.max_processes;
 }
 
 bool Pipeline::step_detect_framework(JobContext& ctx) const {
@@ -292,10 +316,7 @@ Pipeline::LaneResults Pipeline::run_lane(
 
     LaneResults out;
     std::string monitor_mode = is_perf ? "normal" : ctx.assignment_config.correctness_mode;
-    out.thread_counts = ThreadCounts::get(
-        is_perf ? to_string(test_mode::performance) : to_string(test_mode::correctness),
-        ctx.threads
-    );
+    out.thread_counts = ThreadCounts::get(ctx.threads);
     long long memory_limit_kb = ctx.memory_limit_mb * 1024;
     auto extra_lib_dirs = build_service_.get_extra_lib_dirs(ctx.framework);
     out.results = test_executor_.run(

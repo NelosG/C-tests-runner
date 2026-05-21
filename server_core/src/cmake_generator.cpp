@@ -225,10 +225,16 @@ std::string CMakeGenerator::runner_cmake_lists(
             config_.runner_parlay_source_path
         );
         if(!config_.parlay_headers_path.empty()) {
-            framework_block += "target_include_directories(runner_parlay PRIVATE \""
-                + normalize_path(config_.parlay_headers_path) + "\")\n";
-            framework_block += "include_directories(\""
-                + normalize_path(config_.parlay_headers_path) + "\")\n";
+            // Point parlay_DIR at our shipped parlayConfig.cmake so both this
+            // wrapper and the student's CMake can pull parlay in via plain
+            // `find_package(parlay CONFIG REQUIRED)`. No engine-specific
+            // vocabulary leaks into the student's CMakeLists.
+            const fs::path parlay_cmake_dir =
+                fs::path(config_.parlay_headers_path).parent_path() / "cmake" / "parlay";
+            framework_block += "set(parlay_DIR \""
+                + normalize_path(parlay_cmake_dir.string()) + "\")\n";
+            framework_block += "find_package(parlay CONFIG REQUIRED)\n";
+            framework_block += "target_link_libraries(runner_parlay PRIVATE parlay)\n";
         }
     } else if(framework == "cilk") {
         runner_variant = "runner_cilk";

@@ -110,8 +110,14 @@ TEST_F(CMakeGeneratorTest, parlay_framework_picks_runner_parlay) {
     auto out = gen.runner_cmake_lists("parlay", "main.cpp", "include");
     EXPECT_TRUE(contains(out, "RUNNER_VARIANT runner_parlay"));
     EXPECT_TRUE(contains(out, "runner_parlay.cpp"));
-    EXPECT_TRUE(contains(out, "parlay"))
-        << "parlay headers path or `parlay` target should appear in the rendered file";
+    // parlay is pulled in via the shipped package config; both the wrapper
+    // and the student's CMakeLists use the textbook find_package form.
+    EXPECT_TRUE(contains(out, "set(parlay_DIR"));
+    EXPECT_TRUE(contains(out, "find_package(parlay CONFIG REQUIRED)"));
+    EXPECT_TRUE(contains(out, "target_link_libraries(runner_parlay PRIVATE parlay)"));
+    EXPECT_FALSE(contains(out, "add_library(parlay INTERFACE)"))
+        << "engine must not synthesise a parlay target inline - the shipped "
+           "parlayConfig.cmake owns that";
     // No OpenMP for parlay.
     EXPECT_FALSE(contains(out, "find_package(OpenMP"));
 }

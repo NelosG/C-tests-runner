@@ -1,40 +1,45 @@
-#include <../include/quick_sort.h>
+#include <quick_sort.h>
+
+#include <algorithm>
+#include <ctime>
 #include <random>
 #include <par/pragma.h>
 
 
 namespace parallel {
 
-    void qsort_tasks(std::vector<int>& array, int low, int high, std::mt19937& gen);
+    // Cut-off below which we stop spawning tasks - recursion stays in one thread.
+    constexpr int BLOCK = 1'000;
 
-    void qsort(std::vector<int>& array) {
-        std::mt19937 gen(clock());
+    void qsort_tasks(std::vector<long long>& array, int low, int high, std::mt19937& gen);
+
+    void qsort(std::vector<long long>& array) {
+        std::mt19937 gen(static_cast<std::uint32_t>(std::clock()));
         qsort_tasks(array, 0, static_cast<int>(array.size()) - 1, gen);
     }
 
-    int partition(std::vector<int>& array, const int low, const int high) {
-        const int pivot = array[high];
+    int partition(std::vector<long long>& array, const int low, const int high) {
+        const long long pivot = array[high];
 
-        int i = (low - 1);
-        for(int j = low; j <= high - 1; j++) {
+        int i = low - 1;
+        for(int j = low; j <= high - 1; ++j) {
             if(array[j] <= pivot) {
-                i++;
+                ++i;
                 std::swap(array[i], array[j]);
             }
         }
         std::swap(array[i + 1], array[high]);
-        return (i + 1);
+        return i + 1;
     }
 
-    int partition_r(std::vector<int>& array, const int low, const int high, std::mt19937& gen) {
-        const int mod = (high - low);
+    int partition_r(std::vector<long long>& array, const int low, const int high, std::mt19937& gen) {
+        const int mod = high - low;
         const int random = low + (static_cast<int>(gen()) % mod + mod) % mod;
         std::swap(array[random], array[high]);
-
         return partition(array, low, high);
     }
 
-    void do_qsort(std::vector<int>& array, int low, int high, std::mt19937& gen) {
+    void do_qsort(std::vector<long long>& array, int low, int high, std::mt19937& gen) {
         if(low < high) {
             int q = partition_r(array, low, high, gen);
 
@@ -52,7 +57,7 @@ namespace parallel {
         }
     }
 
-    void qsort_tasks(std::vector<int>& array, int low, int high, std::mt19937& gen) {
+    void qsort_tasks(std::vector<long long>& array, int low, int high, std::mt19937& gen) {
         OMP_PARALLEL(default(none) shared(array, low, high, gen)) {
             OMP_SINGLE() {
                 do_qsort(array, low, high, gen);

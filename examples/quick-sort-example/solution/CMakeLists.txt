@@ -1,15 +1,15 @@
 cmake_minimum_required(VERSION 3.14)
-project(parallel-scan-parlay)
+project(parallel-quicksort-openmp)
 
 set(CMAKE_CXX_STANDARD 17)
-
-find_package(parlay CONFIG REQUIRED)
 
 file(GLOB_RECURSE SOLUTION_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
 
 add_library(student_solution SHARED ${SOLUTION_SOURCES})
 target_include_directories(student_solution PUBLIC include)
-target_link_libraries(student_solution PUBLIC parlay)
+
+# parallel_lib bundles OpenMP + monitor hooks (par::pragma macros).
+target_link_libraries(student_solution PUBLIC parallel_lib)
 
 if(WIN32)
     set_target_properties(student_solution PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)

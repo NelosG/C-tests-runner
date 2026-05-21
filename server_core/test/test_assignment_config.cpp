@@ -183,6 +183,70 @@ TEST(AssignmentConfig, malformed_json_returns_defaults_without_throwing) {
     EXPECT_EQ(cfg.mode, "correctness");
 }
 
+// -----------------------------------------------------------------------------
+// Optional resource caps
+// -----------------------------------------------------------------------------
+
+TEST(AssignmentConfig, resource_caps_absent_yield_nullopts) {
+    TempDir dir;
+    dir.write_file("config.json", R"({"name": "X"})");
+
+    auto cfg = assignment_config::load(dir.path());
+    EXPECT_FALSE(cfg.threads.has_value());
+    EXPECT_FALSE(cfg.memory_limit_mb.has_value());
+    EXPECT_FALSE(cfg.wall_time_sec.has_value());
+    EXPECT_FALSE(cfg.cpu_time_sec.has_value());
+    EXPECT_FALSE(cfg.max_processes.has_value());
+}
+
+TEST(AssignmentConfig, resource_caps_parse_when_present) {
+    TempDir dir;
+    dir.write_file(
+        "config.json",
+        R"({
+        "threads": 8,
+        "memoryLimitMb": 4096,
+        "wallTimeSec": 120,
+        "cpuTimeSec": 90,
+        "maxProcesses": 32
+    })"
+    );
+
+    auto cfg = assignment_config::load(dir.path());
+    ASSERT_TRUE(cfg.threads.has_value());          EXPECT_EQ(*cfg.threads, 8);
+    ASSERT_TRUE(cfg.memory_limit_mb.has_value());  EXPECT_EQ(*cfg.memory_limit_mb, 4096);
+    ASSERT_TRUE(cfg.wall_time_sec.has_value());    EXPECT_EQ(*cfg.wall_time_sec, 120);
+    ASSERT_TRUE(cfg.cpu_time_sec.has_value());     EXPECT_EQ(*cfg.cpu_time_sec, 90);
+    ASSERT_TRUE(cfg.max_processes.has_value());    EXPECT_EQ(*cfg.max_processes, 32);
+}
+
+TEST(AssignmentConfig, resource_caps_with_wrong_type_are_silently_ignored) {
+    // A typo'd resource field should not crash assignment parsing - the other
+    // fields (name/allowedFrameworks/etc.) must still survive.
+    TempDir dir;
+    dir.write_file(
+        "config.json",
+        R"({
+        "name": "X",
+        "allowedFrameworks": ["openmp"],
+        "threads": "eight",
+        "memoryLimitMb": 4.5,
+        "wallTimeSec": true,
+        "cpuTimeSec": null,
+        "maxProcesses": [16]
+    })"
+    );
+
+    auto cfg = assignment_config::load(dir.path());
+    EXPECT_EQ(cfg.name, "X");
+    EXPECT_EQ(cfg.allowed_frameworks, std::vector<std::string>{"openmp"});
+    EXPECT_FALSE(cfg.threads.has_value());
+    EXPECT_FALSE(cfg.memory_limit_mb.has_value());
+    EXPECT_FALSE(cfg.wall_time_sec.has_value());
+    EXPECT_FALSE(cfg.cpu_time_sec.has_value());
+    EXPECT_FALSE(cfg.max_processes.has_value());
+}
+
 TEST(AssignmentConfig, allowed_frameworks_wrong_type_does_not_throw) {
     TempDir dir;
     // allowedFrameworks should be an array; passing a string must be tolerated.

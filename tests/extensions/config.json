@@ -1,7 +1,0 @@
-{
-    "name": "Parallel Quicksort",
-    "mode": "all",
-    "allowedFrameworks": ["openmp"],
-    "allowedPackages": ["parallel_lib"],
-    "correctnessMode": "stress"
-}

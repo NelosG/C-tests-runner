@@ -5,12 +5,15 @@
         "rabbit"
     ],
     "defaultResourceProviders": [
-        "local", "git"
+        "local",
+        "git"
     ],
+    "correctnessWorkers": 4,
     "defaultMemoryLimitMb": 1024,
     "defaultThreads": 4,
     "defaultWallTimeSec": 60,
     "defaultCpuTimeSec": 30,
+    "jobRetentionSeconds": 300,
     "sandbox": {
         "isolatePath": "/usr/bin/isolate",
         "maxBoxId": 99,

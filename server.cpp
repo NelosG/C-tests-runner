@@ -163,6 +163,9 @@ namespace {
 
         TestRunnerService runner(build_config, knobs.sandbox, knobs.cpu, resource_manager);
         runner.set_node_id(node_id);  // embedded in progress events from Pipeline::execute
+        if(server_config.jobRetentionSeconds) {
+            runner.set_job_retention_seconds(*server_config.jobRetentionSeconds);
+        }
         AdapterManager adapter_manager(
             runner, cfg.adapters_dir, cfg.config_dir,
             cfg.exe_dir, node_id, &resource_manager

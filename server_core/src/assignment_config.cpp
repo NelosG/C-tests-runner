@@ -47,6 +47,22 @@ AssignmentConfig assignment_config::load(const fs::path& test_dir) {
             cfg.allowed_frameworks = j["allowedFrameworks"].get<std::vector<std::string>>();
         if(j.contains("allowedPackages"))
             cfg.allowed_packages = j["allowedPackages"].get<std::vector<std::string>>();
+
+        // Optional resource caps. Skip non-integer values - we don't want a
+        // typo'd field to crash assignment parsing for an otherwise-valid repo.
+        auto read_int = [&](const char* key) -> std::optional<int> {
+            if(j.contains(key) && j[key].is_number_integer()) return j[key].get<int>();
+            return std::nullopt;
+        };
+        auto read_int64 = [&](const char* key) -> std::optional<long long> {
+            if(j.contains(key) && j[key].is_number_integer()) return j[key].get<long long>();
+            return std::nullopt;
+        };
+        cfg.threads          = read_int("threads");
+        cfg.memory_limit_mb  = read_int64("memoryLimitMb");
+        cfg.wall_time_sec    = read_int("wallTimeSec");
+        cfg.cpu_time_sec     = read_int("cpuTimeSec");
+        cfg.max_processes    = read_int("maxProcesses");
     } catch(const std::exception& e) {
         std::cerr << "[AssignmentConfig] Failed to parse " << path << ": " << e.what() << "\n";
     }

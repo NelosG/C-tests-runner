@@ -5,7 +5,7 @@
 #   parallel_lib/  - student-facing OpenMP wrappers with monitoring hooks
 #   test_engine/   - lightweight plugin API (test, registry, result types)
 #   server_core/   - server infrastructure (build, queue, runner, converters)
-#   tests/         - example test plugins and student solutions
+#   examples/      - sample student solutions + tests (built per-job at runtime)
 #   adapters/      - transport plugins (HTTP, RabbitMQ) loaded at runtime
 #   tools/         - CLI runner, integration tests, mock orchestrators
 #   server.cpp - adapter-based server mode
@@ -80,13 +80,13 @@ add_subdirectory(runner_lib)    # Runner I/O + timing (static lib for student bu
 add_subdirectory(adapters)       # Transport adapters: HTTP, RabbitMQ (DLLs)
 add_subdirectory(resource)       # Resource providers: git, local (DLLs)
 
-# Dev-only artifacts - example test plugins, sample student solution, mock
-# orchestrators. Not part of the production engine image; teacher/student
-# bring their own. Default ON for local dev (so `cmake --build .` smoke-tests
-# the whole tree); set BUILD_DEV_EXTRAS=OFF in production builds (Dockerfile).
-option(BUILD_DEV_EXTRAS "Build example test plugins, sample solution, and mock orchestrators" ON)
+# Dev-only artifacts - mock orchestrators. Not part of the production engine
+# image; teacher/student bring their own solutions/tests. Default ON for local
+# dev; set BUILD_DEV_EXTRAS=OFF in production builds (Dockerfile).
+# Sample student solutions + test plugins live under examples/ and are built
+# per-job at runtime by BuildService, not at engine-build time.
+option(BUILD_DEV_EXTRAS "Build mock orchestrators" ON)
 if(BUILD_DEV_EXTRAS)
-    add_subdirectory(tests)      # Example test plugins (DLLs) + sample student solution
     add_subdirectory(tools)      # Mock HTTP / RabbitMQ orchestrators (dev only)
 endif()
 
