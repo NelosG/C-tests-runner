@@ -33,6 +33,20 @@ class Test {
 
         std::string name;
 
+        /// Optional: path to a ready-made TLV blob. When set, the engine
+        /// copies the file straight into the sandbox as input.bin and
+        /// skips setup_(). Used for "external" inputs (e.g. converted
+        /// from pbbs's test-data generators).
+        std::string raw_input_path;
+
+        /// Optional: path to an expected TLV output blob. When set the
+        /// engine byte-compares the runner's output.bin to this file
+        /// instead of calling verify_(). Empty -> verify_() is used.
+        std::string expected_output_path;
+
+        bool has_raw_input() const { return !raw_input_path.empty(); }
+        bool has_expected_output() const { return !expected_output_path.empty(); }
+
         void setup(TestData& input) const {
             if(setup_) setup_(input);
         }
@@ -41,7 +55,8 @@ class Test {
             const TestData& input,
             const TestData& output
         ) const {
-            return verify_(input, output);
+            return verify_ ? verify_(input, output)
+                           : std::pair<bool, std::string>{true, std::string{}};
         }
 
     private:

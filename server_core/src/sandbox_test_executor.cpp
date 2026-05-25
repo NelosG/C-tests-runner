@@ -35,8 +35,25 @@ namespace {
         try {
             TestInput out;
             out.dir = input_dir;
-            test.setup(out.data);
-            out.data.save(input_dir / "input.bin");
+            if(test.has_raw_input()) {
+                // Pre-built TLV blob (e.g. converted from a pbbs
+                // testInput); skip setup() and copy the file straight
+                // in as the sandbox-side input.bin.
+                std::error_code ec;
+                fs::copy_file(test.raw_input_path,
+                              input_dir / "input.bin",
+                              fs::copy_options::overwrite_existing,
+                              ec);
+                if(ec) throw std::runtime_error(
+                    "Failed to copy raw_input_path '" + test.raw_input_path
+                    + "': " + ec.message());
+                // Mirror the bytes into out.data so verify() can still
+                // call input.read_* (matches the non-raw code path).
+                out.data = TestData::load(input_dir / "input.bin");
+            } else {
+                test.setup(out.data);
+                out.data.save(input_dir / "input.bin");
+            }
             return out;
         } catch(const std::exception& e) {
             std::error_code ec;

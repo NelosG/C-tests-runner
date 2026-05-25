@@ -258,6 +258,15 @@ namespace {
         nlohmann::json input;
         nlohmann::json output;   ///< object {key: expected_value, ...}
         double epsilon = 1e-9;
+        // Optional: absolute path of a ready-made TLV blob. When set,
+        // `input` is ignored and the file is fed directly into the
+        // sandbox as input.bin. Resolved against the JSON file's
+        // directory in load().
+        std::string input_file;
+        // Optional: absolute path of an expected TLV output blob. When
+        // set the output is byte-compared with this file and `output`
+        // is ignored.
+        std::string expected_output_file;
     };
 
     // ============================================================================
@@ -280,29 +289,39 @@ namespace {
                     const auto input_obj = def.input;
                     const auto output_obj = def.output;
                     const double eps = def.epsilon;
+                    const bool has_input_file = !def.input_file.empty();
 
-                    auto setup_fn = [input_obj](TestData& in) {
-                        if(!input_obj.is_object())
-                            throw std::runtime_error("JSON scenario: 'input' must be an object");
-                        for(auto it = input_obj.begin(); it != input_obj.end(); ++it) {
-                            write_json_to_test_data(in, it.key(), it.value());
-                        }
-                    };
+                    Test::SetupFn setup_fn;
+                    if(!has_input_file) {
+                        setup_fn = [input_obj](TestData& in) {
+                            if(!input_obj.is_object())
+                                throw std::runtime_error("JSON scenario: 'input' must be an object");
+                            for(auto it = input_obj.begin(); it != input_obj.end(); ++it) {
+                                write_json_to_test_data(in, it.key(), it.value());
+                            }
+                        };
+                    }
 
-                    auto verify_fn = [output_obj, eps](
-                        const TestData& /*in*/,
-                        const TestData& out
-                    ) -> std::pair<bool, std::string> {
-                        if(!output_obj.is_object())
-                            return {false, "JSON scenario: 'output' must be an object"};
-                        for(auto it = output_obj.begin(); it != output_obj.end(); ++it) {
-                            auto [ok, msg] = verify_json_against_output(it.key(), it.value(), out, eps);
-                            if(!ok) return {false, msg};
-                        }
-                        return {true, std::string{}};
-                    };
+                    Test::VerifyFn verify_fn;
+                    if(def.expected_output_file.empty()) {
+                        verify_fn = [output_obj, eps](
+                            const TestData& /*in*/,
+                            const TestData& out
+                        ) -> std::pair<bool, std::string> {
+                            if(!output_obj.is_object())
+                                return {true, std::string{}};
+                            for(auto it = output_obj.begin(); it != output_obj.end(); ++it) {
+                                auto [ok, msg] = verify_json_against_output(it.key(), it.value(), out, eps);
+                                if(!ok) return {false, msg};
+                            }
+                            return {true, std::string{}};
+                        };
+                    }
 
-                    tests.emplace_back(def.name, std::move(setup_fn), std::move(verify_fn));
+                    Test t{def.name, std::move(setup_fn), std::move(verify_fn)};
+                    t.raw_input_path = def.input_file;
+                    t.expected_output_path = def.expected_output_file;
+                    tests.push_back(std::move(t));
                 }
 
                 return tests;
@@ -338,6 +357,9 @@ void JsonScenarioLoader::load(const std::string& test_dir, TestRegistry& registr
                 type = ScenarioType::PERFORMANCE;
 
             const auto& tests_arr = j.at("tests");
+            // Relative input_file / expected_output_file paths resolve
+            // against the json file's directory (e.g. `<test_dir>/cases/`).
+            fs::path json_dir = it->path().parent_path();
             std::vector<TestDef> defs;
             for(const auto& t : tests_arr) {
                 TestDef d;
@@ -345,6 +367,16 @@ void JsonScenarioLoader::load(const std::string& test_dir, TestRegistry& registr
                 d.input = t.value("input", nlohmann::json::object());
                 d.output = t.value("output", nlohmann::json::object());
                 d.epsilon = t.value("epsilon", 1e-9);
+                if(t.contains("input_file")) {
+                    fs::path p = t["input_file"].get<std::string>();
+                    if(p.is_relative()) p = json_dir / p;
+                    d.input_file = fs::weakly_canonical(p).string();
+                }
+                if(t.contains("expected_output_file")) {
+                    fs::path p = t["expected_output_file"].get<std::string>();
+                    if(p.is_relative()) p = json_dir / p;
+                    d.expected_output_file = fs::weakly_canonical(p).string();
+                }
                 defs.push_back(std::move(d));
             }
 

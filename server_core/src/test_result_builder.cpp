@@ -10,8 +10,11 @@
 
 #include "sandbox_test_executor.h"
 
+#include <fstream>
+#include <iterator>
 #include <path_sanitizer.h>
 #include <test_data.h>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -97,10 +100,37 @@ TestResult SandboxTestExecutor::build_test_result(
     }
 
     try {
-        TestData output = TestData::load(output_dir / "output.bin");
-        auto [passed, message] = test.verify(input, output);
-        tr.passed = passed;
-        tr.message = message;
+        if(test.has_expected_output()) {
+            // Byte-compare output.bin with the supplied expected blob.
+            // Used together with raw_input_path for "feed pbbs's bench
+            // bytes through our engine" comparisons.
+            std::ifstream got(output_dir / "output.bin", std::ios::binary);
+            std::ifstream exp(test.expected_output_path, std::ios::binary);
+            if(!got || !exp) {
+                tr.passed = false;
+                tr.message = "Failed to open output / expected file";
+            } else {
+                std::vector<char> bg((std::istreambuf_iterator<char>(got)),
+                                     std::istreambuf_iterator<char>());
+                std::vector<char> be((std::istreambuf_iterator<char>(exp)),
+                                     std::istreambuf_iterator<char>());
+                if(bg.size() != be.size()) {
+                    tr.passed = false;
+                    tr.message = "output size " + std::to_string(bg.size())
+                        + " != expected " + std::to_string(be.size());
+                } else if(bg != be) {
+                    tr.passed = false;
+                    tr.message = "output bytes differ from expected";
+                } else {
+                    tr.passed = true;
+                }
+            }
+        } else {
+            TestData output = TestData::load(output_dir / "output.bin");
+            auto [passed, message] = test.verify(input, output);
+            tr.passed = passed;
+            tr.message = message;
+        }
     } catch(const std::exception& e) {
         tr.passed = false;
         tr.message = std::string("Verify threw exception: ") + e.what();
@@ -110,89 +140,184 @@ TestResult SandboxTestExecutor::build_test_result(
 }
 
 // ============================================================================
-// buildSummary - aggregate stats across results
+// Shared aggregation helpers
+// ============================================================================
+//
+// The `results` vector has a strict layout:
+//   [T1: scen0, scen1, ..., scenN] [T2: scen0, scen1, ..., scenN] ...
+// `scenario_indices` selects which scenarios (by index in 0..num_scenarios)
+// contribute to the aggregate. With one index it produces per-scenario stats;
+// with all indices it produces the job-wide summary.
+//
+// Scalability uses pairwise gating: a test contributes to the ladder entry for
+// thread count T only if it passed at BOTH the T=1 baseline AND T. This keeps
+// failed tests (timeouts, crashes, OOM kills) from poisoning the speedup -
+// crashes typically return time_ms near zero (fake "1000x speedup") and
+// timeouts return time_ms ~= wall_limit (fake "0.001x speedup"). Entries with
+// zero compared tests are omitted entirely, and if the baseline itself has no
+// passing tests the entire scalability array is omitted.
+
+namespace {
+
+    nlohmann::json build_scalability(
+        const std::vector<TestScenarioResult>& results,
+        const std::vector<int>& thread_counts,
+        size_t num_scenarios,
+        const std::vector<size_t>& scenario_indices
+    ) {
+        if(thread_counts.size() < 2 || results.empty() || scenario_indices.empty())
+            return nlohmann::json::array();
+
+        auto scalability = nlohmann::json::array();
+
+        for(size_t t = 0; t < thread_counts.size(); ++t) {
+            double total_time_ms = 0.0;
+            double baseline_time_ms = 0.0;
+            double total_cpu_sec = 0.0;
+            long long max_rss_kb = 0;
+            int tests_compared = 0;
+            int tests_skipped = 0;
+
+            for(size_t s : scenario_indices) {
+                const auto& sr_t = results[t * num_scenarios + s];
+                const auto& sr_baseline = results[s];   // T=1, first slab
+                size_t n = std::min(sr_t.results.size(),
+                                    sr_baseline.results.size());
+                for(size_t i = 0; i < n; ++i) {
+                    const auto& r_t = sr_t.results[i];
+                    const auto& r_baseline = sr_baseline.results[i];
+                    if(!r_t.passed || !r_baseline.passed) {
+                        ++tests_skipped;
+                        continue;
+                    }
+                    ++tests_compared;
+                    total_time_ms += r_t.time_ms;
+                    baseline_time_ms += r_baseline.time_ms;
+                    total_cpu_sec += r_t.cpu_time_sec;
+                    if(r_t.max_rss_kb > max_rss_kb)
+                        max_rss_kb = r_t.max_rss_kb;
+                }
+            }
+
+            // Drop entries that have no comparable pair at this thread count;
+            // reporting a number for an empty set would be a lie.
+            if(tests_compared == 0) continue;
+
+            double speedup = (total_time_ms > 0.0)
+                ? baseline_time_ms / total_time_ms
+                : 0.0;
+            int tc = thread_counts[t];
+            scalability.push_back({
+                {"threads", tc},
+                {"totalTimeMs", total_time_ms},
+                {"speedup", speedup},
+                {"efficiency", (tc > 0) ? speedup / tc : 0.0},
+                {"maxRssKb", max_rss_kb},
+                {"totalCpuTimeSec", total_cpu_sec},
+                {"testsCompared", tests_compared},
+                {"testsSkipped", tests_skipped}
+            });
+        }
+
+        return scalability;
+    }
+
+    nlohmann::json build_aggregate(
+        const std::vector<TestScenarioResult>& results,
+        const std::vector<int>& thread_counts,
+        size_t num_scenarios,
+        const std::vector<size_t>& scenario_indices
+    ) {
+        nlohmann::json summary;
+        int total = 0, passed = 0, failed = 0;
+        int failed_timeout = 0, failed_oom = 0;
+        int failed_crash = 0, failed_correctness = 0;
+        double max_time_ms = 0.0;
+        long long max_rss_kb = 0, max_cg_mem_kb = 0;
+        double total_cpu_sec = 0.0;
+
+        for(size_t t = 0; t < thread_counts.size(); ++t) {
+            for(size_t s : scenario_indices) {
+                if(t * num_scenarios + s >= results.size()) continue;
+                const auto& sr = results[t * num_scenarios + s];
+                for(const auto& tr : sr.results) {
+                    ++total;
+                    if(tr.time_ms > max_time_ms) max_time_ms = tr.time_ms;
+                    if(tr.max_rss_kb > max_rss_kb) max_rss_kb = tr.max_rss_kb;
+                    if(tr.cg_mem_peak_kb > max_cg_mem_kb)
+                        max_cg_mem_kb = tr.cg_mem_peak_kb;
+                    total_cpu_sec += tr.cpu_time_sec;
+
+                    if(tr.passed) { ++passed; continue; }
+                    ++failed;
+                    if(tr.timed_out) ++failed_timeout;
+                    else if(tr.oom_killed) ++failed_oom;
+                    else if(tr.exit_code != 0) ++failed_crash;
+                    else ++failed_correctness;
+                }
+            }
+        }
+
+        summary["totalTests"] = total;
+        summary["passed"] = passed;
+        summary["failed"] = failed;
+        summary["failedByTimeout"] = failed_timeout;
+        summary["failedByOom"] = failed_oom;
+        summary["failedByCrash"] = failed_crash;
+        summary["failedByCorrectness"] = failed_correctness;
+        summary["maxTimeMs"] = max_time_ms;
+        summary["maxRssKb"] = max_rss_kb;
+        summary["maxCgMemPeakKb"] = max_cg_mem_kb;
+        summary["totalCpuTimeSec"] = total_cpu_sec;
+
+        auto scal = build_scalability(results, thread_counts,
+                                      num_scenarios, scenario_indices);
+        if(!scal.empty()) summary["scalability"] = scal;
+        return summary;
+    }
+
+} // namespace
+
+// ============================================================================
+// buildSummary - job-wide aggregate across all scenarios
 // ============================================================================
 
 nlohmann::json SandboxTestExecutor::build_summary(
     const std::vector<TestScenarioResult>& results,
     const std::vector<int>& thread_counts,
     const std::string& /*label*/
-
 ) {
-    nlohmann::json summary;
-    int total = 0, passed = 0, failed = 0;
-    int failed_timeout = 0, failed_oom = 0, failed_crash = 0, failed_correctness = 0;
-    double max_time_ms = 0.0;
-    long long max_rss_kb = 0, max_cg_mem_kb = 0;
-    double total_cpu_sec = 0.0;
-
-    for(const auto& sr : results) {
-        for(const auto& tr : sr.results) {
-            ++total;
-            if(tr.time_ms > max_time_ms) max_time_ms = tr.time_ms;
-            if(tr.max_rss_kb > max_rss_kb) max_rss_kb = tr.max_rss_kb;
-            if(tr.cg_mem_peak_kb > max_cg_mem_kb) max_cg_mem_kb = tr.cg_mem_peak_kb;
-            total_cpu_sec += tr.cpu_time_sec;
-
-            if(tr.passed) {
-                ++passed;
-                continue;
-            }
-            ++failed;
-            if(tr.timed_out) ++failed_timeout;
-            else if(tr.oom_killed) ++failed_oom;
-            else if(tr.exit_code != 0) ++failed_crash;
-            else ++failed_correctness;
-        }
-    }
-
-    summary["totalTests"] = total;
-    summary["passed"] = passed;
-    summary["failed"] = failed;
-    summary["failedByTimeout"] = failed_timeout;
-    summary["failedByOom"] = failed_oom;
-    summary["failedByCrash"] = failed_crash;
-    summary["failedByCorrectness"] = failed_correctness;
-    summary["maxTimeMs"] = max_time_ms;
-    summary["maxRssKb"] = max_rss_kb;
-    summary["maxCgMemPeakKb"] = max_cg_mem_kb;
-    summary["totalCpuTimeSec"] = total_cpu_sec;
-
-    // Scalability: speedup at each thread count vs t=1 baseline.
-    if(thread_counts.size() < 2 || results.empty()) return summary;
+    if(results.empty() || thread_counts.empty())
+        return nlohmann::json::object();
 
     size_t num_scenarios = results.size() / thread_counts.size();
     if(num_scenarios == 0 || results.size() != num_scenarios * thread_counts.size())
-        return summary;
+        return nlohmann::json::object();
 
-    auto scalability = nlohmann::json::array();
-    for(size_t t = 0; t < thread_counts.size(); ++t) {
-        double t_total = 0.0, t1_total = 0.0, t_cpu_sec = 0.0;
-        long long t_max_rss = 0;
-        for(size_t s = 0; s < num_scenarios; ++s) {
-            const auto& sr_t = results[t * num_scenarios + s];
-            const auto& sr_1 = results[s];
-            for(size_t i = 0; i < sr_t.results.size() && i < sr_1.results.size(); ++i) {
-                t_total += sr_t.results[i].time_ms;
-                t1_total += sr_1.results[i].time_ms;
-                t_cpu_sec += sr_t.results[i].cpu_time_sec;
-                if(sr_t.results[i].max_rss_kb > t_max_rss)
-                    t_max_rss = sr_t.results[i].max_rss_kb;
-            }
-        }
-        double speedup = (t_total > 0.0) ? t1_total / t_total : 0.0;
-        int tc = thread_counts[t];
-        scalability.push_back(
-            {
-                {"threads", tc},
-                {"totalTimeMs", t_total},
-                {"speedup", speedup},
-                {"efficiency", (tc > 0) ? speedup / tc : 0.0},
-                {"maxRssKb", t_max_rss},
-                {"totalCpuTimeSec", t_cpu_sec}
-            }
-        );
-    }
-    summary["scalability"] = scalability;
-    return summary;
+    std::vector<size_t> all_scenarios(num_scenarios);
+    for(size_t s = 0; s < num_scenarios; ++s) all_scenarios[s] = s;
+    return build_aggregate(results, thread_counts, num_scenarios, all_scenarios);
+}
+
+// ============================================================================
+// buildScenarioSummary - per-scenario aggregate (used by the JSON converter
+// to attach a summary block to each correctness[] / performance[] entry)
+// ============================================================================
+
+nlohmann::json SandboxTestExecutor::build_scenario_summary(
+    const std::vector<TestScenarioResult>& results,
+    const std::vector<int>& thread_counts,
+    size_t scenario_index
+) {
+    if(results.empty() || thread_counts.empty())
+        return nlohmann::json::object();
+
+    size_t num_scenarios = results.size() / thread_counts.size();
+    if(num_scenarios == 0 || results.size() != num_scenarios * thread_counts.size())
+        return nlohmann::json::object();
+    if(scenario_index >= num_scenarios)
+        return nlohmann::json::object();
+
+    return build_aggregate(results, thread_counts, num_scenarios,
+                           std::vector<size_t>{scenario_index});
 }

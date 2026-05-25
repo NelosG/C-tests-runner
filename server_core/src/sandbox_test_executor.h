@@ -51,18 +51,29 @@ class SandboxTestExecutor {
             int max_processes = 0   ///< 0 = use thread_count * 2 fallback
         );
 
-        /// Compute totals + scalability summary from a result set.
+        /// Compute totals + scalability summary across ALL scenarios.
+        /// Scalability uses pairwise gating (test contributes to ladder
+        /// entry T only if it passed at both T=1 baseline AND T) and adds
+        /// `testsCompared` / `testsSkipped` per entry. Entries with zero
+        /// compared tests are omitted; if no entry is valid (baseline broken),
+        /// `scalability` is omitted entirely.
         static nlohmann::json build_summary(
             const std::vector<TestScenarioResult>& results,
             const std::vector<int>& thread_counts,
             const std::string& label
         );
 
-    private:
-        SandboxLauncher& sandbox_;
-        CpuIsolator& cpu_isolator_;
+        /// Same aggregation as build_summary but scoped to one scenario
+        /// (selected by index in 0..num_scenarios). Used by the converter
+        /// to attach a per-scenario summary block.
+        static nlohmann::json build_scenario_summary(
+            const std::vector<TestScenarioResult>& results,
+            const std::vector<int>& thread_counts,
+            size_t scenario_index
+        );
 
         /// Convert a sandbox RunResult + verify() outcome into a TestResult.
+        /// Public for unit-test access; no external callers in production.
         static TestResult build_test_result(
             const Test& test,
             const SandboxLauncher::RunResult& run_result,
@@ -70,4 +81,8 @@ class SandboxTestExecutor {
             const TestData& input,
             const std::filesystem::path& output_dir
         );
+
+    private:
+        SandboxLauncher& sandbox_;
+        CpuIsolator& cpu_isolator_;
 };

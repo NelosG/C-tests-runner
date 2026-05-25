@@ -3,6 +3,7 @@
 
 set(SOURCES
         test_monitor.cpp
+        test_monitor_extras.cpp
 )
 
 add_executable(parallel_lib_tests ${SOURCES})
