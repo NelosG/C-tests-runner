@@ -1,0 +1,16 @@
+{
+    "name": "pbbs BWDecode - listRank variant",
+    "mode": "performance",
+    "allowedFrameworks": [
+        "parlay"
+    ],
+    "allowedPackages": [
+        "parlay",
+        "parlaylib"
+    ],
+    "correctnessMode": "normal",
+    "threads": 4,
+    "wallTimeSec": 180,
+    "memoryLimitMb": 4096,
+    "warmupIterations": 1
+}

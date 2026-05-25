@@ -1,0 +1,16 @@
+{
+    "name": "pbbs histogram - parallel variant",
+    "mode": "performance",
+    "allowedFrameworks": [
+        "parlay"
+    ],
+    "allowedPackages": [
+        "parlay",
+        "parlaylib"
+    ],
+    "correctnessMode": "normal",
+    "threads": 4,
+    "wallTimeSec": 120,
+    "memoryLimitMb": 4096,
+    "warmupIterations": 1
+}

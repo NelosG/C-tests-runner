@@ -1,0 +1,15 @@
+{
+    "name": "pbbs comparisonSort - 4 parlay variants",
+    "mode": "performance",
+    "allowedFrameworks": [
+        "parlay"
+    ],
+    "allowedPackages": [
+        "parlay",
+        "parlaylib"
+    ],
+    "correctnessMode": "normal",
+    "threads": 4,
+    "wallTimeSec": 120,
+    "memoryLimitMb": 4096
+}

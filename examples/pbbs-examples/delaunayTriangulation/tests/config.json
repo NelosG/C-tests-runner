@@ -1,0 +1,16 @@
+{
+    "name": "pbbs delaunayTriangulation - Bowyer-Watson",
+    "mode": "performance",
+    "allowedFrameworks": [
+        "parlay"
+    ],
+    "allowedPackages": [
+        "parlay",
+        "parlaylib"
+    ],
+    "correctnessMode": "normal",
+    "threads": 4,
+    "wallTimeSec": 360,
+    "memoryLimitMb": 4096,
+    "warmupIterations": 0
+}

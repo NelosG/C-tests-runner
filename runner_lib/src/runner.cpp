@@ -33,6 +33,10 @@ namespace runner {
             else if(key == "--threads") {
                 try { config_.thread_count = std::stoi(val); } catch(...) { config_.thread_count = 1; }
             } else if(key == "--monitor-mode") config_.monitor_mode = val;
+            else if(key == "--warmup") {
+                try { config_.warmup_iterations = std::stoi(val); }
+                catch(...) { config_.warmup_iterations = 0; }
+            }
         }
 
         if(!config_.output_dir.empty()) {
@@ -67,6 +71,32 @@ namespace runner {
             execute_end_ - execute_start_
         ).count();
         return static_cast<double>(us) / 1000.0;
+    }
+
+    bool _execute_should_continue() {
+        // Counter survives across iterations of one RUNNER_EXECUTE and is
+        // reset to 0 once we exit, so a subsequent RUNNER_EXECUTE in the
+        // same runner main starts fresh.
+        static int counter = 0;
+        const int target = config_.warmup_iterations;
+        if(counter == target + 1) {
+            end_execute();
+            counter = 0;
+            return false;
+        }
+        if(counter == target) {
+            // Timed iteration. When warmup>0 we discard any output the
+            // warmup runs left behind; with warmup==0 we leave the map
+            // untouched so writes that happened BEFORE RUNNER_EXECUTE
+            // (preserved by the legacy single-pass semantics) survive.
+            if(target > 0) output_data_ = TestData{};
+            begin_execute();
+        } else {
+            // Untimed warmup iteration.
+            output_data_ = TestData{};
+        }
+        ++counter;
+        return true;
     }
 
     void set_finish_hook(finish_hook_t hook) {

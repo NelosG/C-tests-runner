@@ -1,0 +1,16 @@
+{
+    "name": "pbbs concurrentKNN - parallel KD-tree",
+    "mode": "performance",
+    "allowedFrameworks": [
+        "parlay"
+    ],
+    "allowedPackages": [
+        "parlay",
+        "parlaylib"
+    ],
+    "correctnessMode": "normal",
+    "threads": 4,
+    "wallTimeSec": 240,
+    "memoryLimitMb": 4096,
+    "warmupIterations": 1
+}

@@ -36,6 +36,11 @@ class SandboxLauncher {
             /// to LD_LIBRARY_PATH. Used for framework-specific runtime libs that live
             /// outside /runner (e.g. /opt/opencilk/lib/.../libopencilk*.so*).
             std::vector<std::string> extra_lib_dirs;
+
+            /// Untimed warmup iterations the runner runs before the timed
+            /// RUNNER_EXECUTE pass. Passed via --warmup; runner_lib reads
+            /// runner::config().warmup_iterations.
+            int warmup_iterations = 0;
         };
 
         struct RunResult {

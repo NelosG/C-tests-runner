@@ -1,0 +1,16 @@
+{
+    "name": "pbbs suffixArray - parallelKS",
+    "mode": "performance",
+    "allowedFrameworks": [
+        "parlay"
+    ],
+    "allowedPackages": [
+        "parlay",
+        "parlaylib"
+    ],
+    "correctnessMode": "normal",
+    "threads": 4,
+    "wallTimeSec": 300,
+    "memoryLimitMb": 4096,
+    "warmupIterations": 1
+}

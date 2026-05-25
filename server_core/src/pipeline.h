@@ -76,6 +76,7 @@ class Pipeline {
             int wall_time_sec = 60;
             int cpu_time_sec = 30;
             int max_processes = 0;     ///< 0 -> derive from threads * sandbox_process_multiplier
+            int warmup_iterations = 0; ///< untimed RUNNER_EXECUTE iterations before the timed one
             std::string solution_name;
             progress::callback on_progress;
 

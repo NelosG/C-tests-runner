@@ -63,6 +63,7 @@ AssignmentConfig assignment_config::load(const fs::path& test_dir) {
         cfg.wall_time_sec    = read_int("wallTimeSec");
         cfg.cpu_time_sec     = read_int("cpuTimeSec");
         cfg.max_processes    = read_int("maxProcesses");
+        cfg.warmup_iterations = read_int("warmupIterations");
     } catch(const std::exception& e) {
         std::cerr << "[AssignmentConfig] Failed to parse " << path << ": " << e.what() << "\n";
     }

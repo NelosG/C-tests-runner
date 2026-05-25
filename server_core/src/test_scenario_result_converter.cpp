@@ -1,4 +1,5 @@
 #include <iostream>
+#include <sandbox_test_executor.h>
 #include <test_result_converter.h>
 #include <test_scenario_result_converter.h>
 
@@ -103,6 +104,15 @@ nlohmann::json TestScenarioResultConverter::to_grouped_json(
             tests_grouped.push_back(test_entry);
         }
         scenario["tests"] = tests_grouped;
+
+        // Per-scenario summary: same aggregation as the job-wide summary but
+        // restricted to this scenario. Lets consumers report stats per
+        // assignment without re-scanning the full runs[] tree.
+        auto scenario_summary =
+            SandboxTestExecutor::build_scenario_summary(results, thread_counts, s);
+        if(!scenario_summary.empty()) {
+            scenario["summary"] = scenario_summary;
+        }
 
         // Performance metrics: compare threads=1 vs threads=N
         if(perf_mode && thread_counts.size() >= 2) {

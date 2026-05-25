@@ -60,6 +60,12 @@ namespace runner {
         std::string output_dir;
         int thread_count = 1;
         std::string monitor_mode = "normal";
+        /// Number of untimed RUNNER_EXECUTE iterations before the timed one.
+        /// 0 = single timed pass (default). >0 warms page caches / scheduler
+        /// state so the timed pass excludes first-touch overhead, matching
+        /// pbbs's time_loop semantics. Only safe for wrappers that do NOT
+        /// mutate their input arguments.
+        int warmup_iterations = 0;
     };
 
     const RunnerConfig& init(int argc, char* argv[]);
@@ -115,6 +121,15 @@ namespace runner {
         return v;
     }
 
+    /// Read a composite object written via write_object. Returns the parsed
+    /// sub-TestData by value; the raw bytes are erased from input() like the
+    /// other consumer-style readers.
+    inline TestData read_object(const std::string& k) {
+        TestData v = input().read_object(k);
+        input().erase(k);
+        return v;
+    }
+
     template<typename T>
     void write_value(const std::string& k, T v) { output().write_value<T>(k, v); }
 
@@ -124,6 +139,11 @@ namespace runner {
     inline void write_string(const std::string& k, const std::string& s) { output().write_string(k, s); }
     inline void write_strings(const std::string& k, const std::vector<std::string>& v) { output().write_strings(k, v); }
 
+    template<typename F>
+    void write_object(const std::string& k, F&& builder) {
+        output().write_object(k, std::forward<F>(builder));
+    }
+
     // ========================================================================
     // Timing
     // ========================================================================
@@ -131,6 +151,11 @@ namespace runner {
     void begin_execute();
     void end_execute();
     double execute_time_ms();
+
+    /// Loop driver for RUNNER_EXECUTE. Walks `warmup_iterations` untimed
+    /// runs followed by exactly one timed run, then returns false to exit
+    /// the loop. Internal - prefer the RUNNER_EXECUTE macro below.
+    bool _execute_should_continue();
 
     // ========================================================================
     // Finish hook (framework variants inject parallelStats into Meta)
@@ -158,10 +183,15 @@ namespace runner {
     } \
     static void runner_user_code_()
 
-/// Runs the test body exactly once and measures wall time via steady_clock
-/// from begin_execute() to end_execute(). Framework-specific `setup()` will
-/// have already spawned the thread pool / scheduler so the first parallel
-/// region inside the body doesn't pay for it.
+/// Runs the test body `warmup_iterations + 1` times. The first
+/// `warmup_iterations` runs are untimed (their effect on runner::output()
+/// is discarded - the output map is cleared between iterations). The last
+/// run is the timed one; its wall time is reported.
+///
+/// With warmup_iterations = 0 (default) this is exactly one timed pass,
+/// matching the original semantics.
+///
+/// IMPORTANT: enabling warmup is only safe if the body does NOT mutate its
+/// input. In-place sorts etc. must keep warmup_iterations = 0.
 #define RUNNER_EXECUTE \
-    runner::begin_execute(); \
-    for (bool _runner_once_ = true; _runner_once_; _runner_once_ = false, runner::end_execute())
+    while (runner::_execute_should_continue())

@@ -77,11 +77,18 @@ namespace {
         int cpu_time_sec,
         const std::string& cpus,
         const std::vector<std::string>& extra_lib_dirs,
-        int max_processes
+        int max_processes,
+        int warmup_iterations
     ) {
         SandboxLauncher::JobConfig cfg;
-        cfg.wall_time_sec = wall_time_sec;
-        cfg.cpu_time_sec = cpu_time_sec;
+        // Caller's wall/cpu budgets are per-iteration of the *timed* body.
+        // With warmup we run (warmup_iterations + 1) bodies inside the same
+        // sandbox child, so the isolate-level limits must be scaled up or
+        // every warmup-enabled perf test would SIGTERM mid-warmup. The
+        // user-facing effectiveParams keep the per-iteration value.
+        const int loop_count = std::max(1, warmup_iterations + 1);
+        cfg.wall_time_sec = wall_time_sec * loop_count;
+        cfg.cpu_time_sec = cpu_time_sec * loop_count;
         cfg.memory_limit_kb = static_cast<int>(std::min(
             memory_limit_kb,
             static_cast<long long>(std::numeric_limits<int>::max())
@@ -89,6 +96,7 @@ namespace {
         cfg.max_processes = max_processes > 0 ? max_processes : thread_count * 2;
         cfg.cpus = cpus;
         cfg.extra_lib_dirs = extra_lib_dirs;
+        cfg.warmup_iterations = warmup_iterations;
         return cfg;
     }
 
@@ -118,7 +126,8 @@ std::vector<TestScenarioResult> SandboxTestExecutor::run(
     progress::callback on_progress,
     const std::string& node_id,
     const std::vector<std::string>& extra_lib_dirs,
-    int max_processes
+    int max_processes,
+    int warmup_iterations
 ) {
     // Per-test progress emitter - no-op when on_progress isn't set (CLI / older callers).
     auto emit_test = [&](
@@ -200,7 +209,8 @@ std::vector<TestScenarioResult> SandboxTestExecutor::run(
                     cpu_time_sec,
                     allocated_cpus,
                     extra_lib_dirs,
-                    max_processes
+                    max_processes,
+                    warmup_iterations
                 );
 
                 emit_test(scenario->name(), test.name, tc, "running", std::nullopt, "");

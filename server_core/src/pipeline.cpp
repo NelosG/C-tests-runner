@@ -130,6 +130,7 @@ void Pipeline::init_job_context(JobContext& ctx) const {
         "maxProcesses",
         ctx.threads * proc_multiplier
     );
+    ctx.warmup_iterations = ctx.request.value("warmupIterations", 0);
     ctx.solution_name = request_helpers::extract_solution_name(ctx.request);
 
     ctx.result["jobId"] = ctx.job_id;
@@ -140,6 +141,7 @@ void Pipeline::init_job_context(JobContext& ctx) const {
         {"wallTimeSec", ctx.wall_time_sec},
         {"cpuTimeSec", ctx.cpu_time_sec},
         {"maxProcesses", ctx.max_processes},
+        {"warmupIterations", ctx.warmup_iterations},
         {"testSourceType", ctx.request.value("testSourceType", "local")},
         {"solutionSourceType", ctx.request.value("solutionSourceType", "local")}
     };

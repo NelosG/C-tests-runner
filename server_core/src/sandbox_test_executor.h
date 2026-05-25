@@ -48,7 +48,8 @@ class SandboxTestExecutor {
             progress::callback on_progress = {},
             const std::string& node_id = "",
             const std::vector<std::string>& extra_lib_dirs = {},
-            int max_processes = 0   ///< 0 = use thread_count * 2 fallback
+            int max_processes = 0,  ///< 0 = use thread_count * 2 fallback
+            int warmup_iterations = 0  ///< 0 = no warmup
         );
 
         /// Compute totals + scalability summary across ALL scenarios.

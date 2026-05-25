@@ -34,6 +34,13 @@ struct AssignmentConfig {
     std::optional<int> wall_time_sec;                  ///< wall-clock budget per test (sec)
     std::optional<int> cpu_time_sec;                   ///< cpu-time budget per test (sec)
     std::optional<int> max_processes;                  ///< sandbox process cap
+    /// Number of untimed warmup iterations of RUNNER_EXECUTE before the
+    /// timed iteration. 0 = no warmup (default, safe for in-place algos).
+    /// 1+ = pre-fault parlay::sequence allocations / page caches so the
+    /// measured body sees a warm process; required to recover ~14x-like
+    /// speedup on memory-bound algos (histogram, integerSort, ...).
+    /// Only safe when the wrapper does NOT mutate its input arguments.
+    std::optional<int> warmup_iterations;
 };
 
 

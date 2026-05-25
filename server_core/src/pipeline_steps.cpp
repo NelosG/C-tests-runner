@@ -91,15 +91,18 @@ void Pipeline::step_parse_config(JobContext& ctx) const {
         if(a.max_processes) ctx.max_processes = *a.max_processes;
         else ctx.max_processes = ctx.threads * build_service_.sandbox_process_multiplier();
     }
+    if(!req.contains("warmupIterations") && a.warmup_iterations)
+        ctx.warmup_iterations = *a.warmup_iterations;
 
     ctx.mode = ctx.assignment_config.mode;
     ctx.result["mode"] = ctx.mode;
-    ctx.result["effectiveParams"]["mode"]           = ctx.mode;
-    ctx.result["effectiveParams"]["threads"]        = ctx.threads;
-    ctx.result["effectiveParams"]["memoryLimitMb"]  = ctx.memory_limit_mb;
-    ctx.result["effectiveParams"]["wallTimeSec"]    = ctx.wall_time_sec;
-    ctx.result["effectiveParams"]["cpuTimeSec"]     = ctx.cpu_time_sec;
-    ctx.result["effectiveParams"]["maxProcesses"]   = ctx.max_processes;
+    ctx.result["effectiveParams"]["mode"]             = ctx.mode;
+    ctx.result["effectiveParams"]["threads"]          = ctx.threads;
+    ctx.result["effectiveParams"]["memoryLimitMb"]    = ctx.memory_limit_mb;
+    ctx.result["effectiveParams"]["wallTimeSec"]      = ctx.wall_time_sec;
+    ctx.result["effectiveParams"]["cpuTimeSec"]       = ctx.cpu_time_sec;
+    ctx.result["effectiveParams"]["maxProcesses"]     = ctx.max_processes;
+    ctx.result["effectiveParams"]["warmupIterations"] = ctx.warmup_iterations;
 }
 
 bool Pipeline::step_detect_framework(JobContext& ctx) const {
@@ -319,6 +322,9 @@ Pipeline::LaneResults Pipeline::run_lane(
     out.thread_counts = ThreadCounts::get(ctx.threads);
     long long memory_limit_kb = ctx.memory_limit_mb * 1024;
     auto extra_lib_dirs = build_service_.get_extra_lib_dirs(ctx.framework);
+    // Warmup only applies to perf lane: correctness keeps one timed pass so
+    // tiny tests stay fast and outputs are deterministic for verify().
+    int warmup = is_perf ? ctx.warmup_iterations : 0;
     out.results = test_executor_.run(
         ctx.runner_result.runner_exe_path,
         registry,
@@ -332,7 +338,8 @@ Pipeline::LaneResults Pipeline::run_lane(
         ctx.on_progress,
         ctx.node_id,
         extra_lib_dirs,
-        ctx.max_processes
+        ctx.max_processes,
+        warmup
     );
     ctx.add_step(step_name, "ok", ctx.step_ms());
     return out;

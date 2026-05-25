@@ -195,6 +195,12 @@ namespace adapter_utils {
                 return {false, "maxProcesses must be a positive integer"};
         }
 
+        if(json.contains("warmupIterations")) {
+            auto& v = json["warmupIterations"];
+            if(!v.is_number_integer() || v.get<int>() < 0)
+                return {false, "warmupIterations must be a non-negative integer"};
+        }
+
         return {true, ""};
     }
 

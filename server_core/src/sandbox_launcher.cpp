@@ -503,6 +503,9 @@ SandboxLauncher::RunResult SandboxLauncher::launch_isolate(
         << " --output " << kSandboxOutputDir
         << " --threads " << thread_count
         << " --monitor-mode " << monitor_mode;
+    if(job_config.warmup_iterations > 0) {
+        run_cmd << " --warmup " << job_config.warmup_iterations;
+    }
 
     run_cmd << " 2>&1";
 

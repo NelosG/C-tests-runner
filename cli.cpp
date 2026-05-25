@@ -20,6 +20,7 @@
 #include <future>
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <optional>
 
 
 namespace {
@@ -55,13 +56,19 @@ namespace {
         std::string branch = "main";
         std::string token;
 
-        // Common
+        // Common. Resource caps stay std::optional so that the request JSON
+        // we hand to TestRunnerService only carries fields the user explicitly
+        // passed. That lets the pipeline's `request > tests/config.json >
+        // server default` cascade do its job for cli runs the same way it
+        // does for HTTP / RabbitMQ adapters.
         std::string test_id;
-        int threads = 4;
-        long long memory_limit_mb = 1024;
+        std::optional<int> threads;
+        std::optional<long long> memory_limit_mb;
         int numa_node = -1;
-        int wall_time_sec = 60;
-        int cpu_time_sec = 30;
+        int infra_reserve = 1;
+        std::optional<int> wall_time_sec;
+        std::optional<int> cpu_time_sec;
+        std::optional<int> warmup_iterations;
         std::string output_file = "result/output.json";
 
         for(int i = 1; i < argc; ++i) {
@@ -97,6 +104,14 @@ namespace {
             } else if(arg == "--cpu-time") {
                 try { cpu_time_sec = std::stoi(argv[++i]); } catch(...) {
                     std::cerr << "[CLI] Invalid --cpu-time\n"; return 1;
+                }
+            } else if(arg == "--warmup") {
+                try { warmup_iterations = std::stoi(argv[++i]); } catch(...) {
+                    std::cerr << "[CLI] Invalid --warmup\n"; return 1;
+                }
+            } else if(arg == "--infra-reserve") {
+                try { infra_reserve = std::stoi(argv[++i]); } catch(...) {
+                    std::cerr << "[CLI] Invalid --infra-reserve\n"; return 1;
                 }
             } else if(arg == "--output") output_file = argv[++i];
             else { std::cerr << "Unknown option: " << arg << "\n"; return 1; }
@@ -149,9 +164,16 @@ namespace {
         SandboxLauncher::Config sandbox_config;
         CpuIsolator::Config cpu_config;
         cpu_config.numa_node = numa_node;
+        // Benchmarking: --infra-reserve 0 lets the test pool use every core
+        // (default reserves 1 for engine infra). Needed for an apples-to-apples
+        // core count vs a bare pbbs binary at T = all-cores.
+        cpu_config.infra_reserve = infra_reserve;
 
         auto build_config = cfg.build_config;
-        build_config.default_memory_limit_mb = memory_limit_mb;
+        // If user passed --memory-limit, lift the server-level default so the
+        // pipeline's fallback (when neither request nor config.json sets it)
+        // matches the cli convention; otherwise keep whatever server.json had.
+        if(memory_limit_mb) build_config.default_memory_limit_mb = *memory_limit_mb;
         TestRunnerService runner(build_config, sandbox_config, cpu_config, resource_manager);
 
         // Build solution list (local dirs or git URLs)
@@ -206,18 +228,24 @@ namespace {
 
             std::cout << "[CLI] Running tests...\n";
 
+            // Build request JSON. Resource caps are only emitted if the user
+            // passed the matching flag on the cli; absence lets the pipeline's
+            // request > tests/config.json > server-default cascade pick the
+            // right value (same semantics as adapter requests from the
+            // orchestrator).
             nlohmann::json request = {
                 {"jobId", job_id},
                 {"testId", test_id},
                 {"solutionSourceType", sol.source_type},
                 {"solutionSource", sol.source},
                 {"testSourceType", test_source_type},
-                {"testSource", test_source},
-                {"threads", threads},
-                {"memoryLimitMb", memory_limit_mb},
-                {"wallTimeSec", wall_time_sec},
-                {"cpuTimeSec", cpu_time_sec}
+                {"testSource", test_source}
             };
+            if(threads)            request["threads"]          = *threads;
+            if(memory_limit_mb)    request["memoryLimitMb"]    = *memory_limit_mb;
+            if(wall_time_sec)      request["wallTimeSec"]      = *wall_time_sec;
+            if(cpu_time_sec)       request["cpuTimeSec"]       = *cpu_time_sec;
+            if(warmup_iterations)  request["warmupIterations"] = *warmup_iterations;
 
             std::promise<nlohmann::json> promise;
             auto future = promise.get_future();

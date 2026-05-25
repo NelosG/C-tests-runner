@@ -7,8 +7,10 @@
 #include <cstdint>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <map>
 #include <stdexcept>
 #include <test_data.h>
+#include <unordered_map>
 #include <vector>
 
 #include "test_temp_dir.h"
@@ -259,6 +261,317 @@ TEST(TestData, load_throws_on_implausible_tag_length) {
         f.write(reinterpret_cast<const char*>(&bogus), sizeof(bogus));
     }
     EXPECT_THROW(TestData::load(file), std::runtime_error);
+}
+
+// -----------------------------------------------------------------------------
+// POD-struct arrays (trivially-copyable user types)
+// -----------------------------------------------------------------------------
+
+namespace {
+    struct Edge {
+        std::int32_t u;
+        std::int32_t v;
+        float w;
+        bool operator==(const Edge& o) const { return u == o.u && v == o.v && w == o.w; }
+    };
+    static_assert(std::is_trivially_copyable_v<Edge>);
+
+    struct Point2d {
+        double x;
+        double y;
+        bool operator==(const Point2d& o) const { return x == o.x && y == o.y; }
+    };
+    static_assert(std::is_trivially_copyable_v<Point2d>);
+}
+
+TEST(TestData, pod_struct_round_trip_as_array) {
+    TestData td;
+    std::vector<Edge> in{{0, 1, 1.5f}, {2, 3, 2.5f}, {4, 5, -3.25f}};
+    td.write_array<Edge>("edges", in);
+    auto out = td.read_array<Edge>("edges");
+    EXPECT_EQ(out, in);
+}
+
+TEST(TestData, pod_struct_round_trip_as_scalar) {
+    TestData td;
+    Edge e{7, 11, 0.5f};
+    td.write_value<Edge>("e", e);
+    EXPECT_EQ(td.read_value<Edge>("e"), e);
+}
+
+// -----------------------------------------------------------------------------
+// Nested arrays - arbitrary depth via recursive NestedIO
+// -----------------------------------------------------------------------------
+
+TEST(TestData, nested_2d_int_round_trip) {
+    TestData td;
+    std::vector<std::vector<long long>> in{
+        {1, 2, 3},
+        {4, 5},
+        {},
+        {6, 7, 8, 9}
+    };
+    td.write_array<std::vector<long long>>("m", in);
+    EXPECT_EQ(td.read_array<std::vector<long long>>("m"), in);
+}
+
+TEST(TestData, nested_3d_double_round_trip) {
+    TestData td;
+    std::vector<std::vector<std::vector<double>>> cube{
+        {{1.0, 2.0}, {3.0}},
+        {{}, {4.5, 5.5, 6.5}},
+        {}
+    };
+    td.write_array<std::vector<std::vector<double>>>("cube", cube);
+    EXPECT_EQ(td.read_array<std::vector<std::vector<double>>>("cube"), cube);
+}
+
+TEST(TestData, nested_pod_struct_round_trip) {
+    TestData td;
+    std::vector<std::vector<Point2d>> rows{
+        {{1.0, 2.0}, {3.0, 4.0}},
+        {},
+        {{-1.5, -2.5}}
+    };
+    td.write_array<std::vector<Point2d>>("rows", rows);
+    EXPECT_EQ(td.read_array<std::vector<Point2d>>("rows"), rows);
+}
+
+TEST(TestData, empty_nested_arrays) {
+    TestData td;
+    std::vector<std::vector<long long>> in{};
+    td.write_array<std::vector<long long>>("m", in);
+    EXPECT_TRUE(td.read_array<std::vector<long long>>("m").empty());
+}
+
+// -----------------------------------------------------------------------------
+// Maps - K/V combinations covering POD, bool, std::string
+// -----------------------------------------------------------------------------
+
+TEST(TestData, map_int_double_round_trip_std_map) {
+    TestData td;
+    std::map<long long, double> in{{1, 1.5}, {3, -2.0}, {-7, 1e-9}};
+    td.write_map("m", in);
+    auto got = td.read_map<std::map<long long, double>>("m");
+    EXPECT_EQ(got, in);
+}
+
+TEST(TestData, map_int_double_round_trip_unordered_map) {
+    TestData td;
+    std::unordered_map<long long, double> in{{1, 1.5}, {3, -2.0}, {-7, 1e-9}};
+    td.write_map("m", in);
+    auto out = td.read_map<std::unordered_map<long long, double>>("m");
+    EXPECT_EQ(out.size(), in.size());
+    for(const auto& [k, v] : in) {
+        ASSERT_TRUE(out.count(k));
+        EXPECT_DOUBLE_EQ(out.at(k), v);
+    }
+}
+
+TEST(TestData, map_cross_container_compatibility) {
+    // Writing as std::map, reading as std::unordered_map (and vice versa) must
+    // both work - the on-disk format only depends on K, V, and N.
+    TestData td;
+    std::map<long long, long long> in{{1, 100}, {2, 200}, {3, 300}};
+    td.write_map("m", in);
+    auto unordered = td.read_map<std::unordered_map<long long, long long>>("m");
+    EXPECT_EQ(unordered.size(), 3u);
+    EXPECT_EQ(unordered.at(1), 100);
+    EXPECT_EQ(unordered.at(2), 200);
+    EXPECT_EQ(unordered.at(3), 300);
+}
+
+TEST(TestData, map_string_int_round_trip) {
+    using MapT = std::map<std::string, long long>;
+    TestData td;
+    MapT in{
+        {"alpha", 1},
+        {"beta", 2},
+        {"", 42},
+        {"with spaces and \xC2\xA9 utf-8", 7}
+    };
+    td.write_map("counts", in);
+    auto got = td.read_map<MapT>("counts");
+    EXPECT_EQ(got, in);
+}
+
+TEST(TestData, map_int_string_round_trip) {
+    using MapT = std::map<long long, std::string>;
+    TestData td;
+    MapT in{
+        {0, "zero"},
+        {1, ""},
+        {42, "the answer"}
+    };
+    td.write_map("labels", in);
+    auto got = td.read_map<MapT>("labels");
+    EXPECT_EQ(got, in);
+}
+
+TEST(TestData, map_string_string_round_trip) {
+    using MapT = std::map<std::string, std::string>;
+    TestData td;
+    MapT in{
+        {"k1", "v1"},
+        {"k2", ""},
+        {"", "empty key"},
+        {"long " "key", "long value with content"}
+    };
+    td.write_map("kv", in);
+    auto got = td.read_map<MapT>("kv");
+    EXPECT_EQ(got, in);
+}
+
+TEST(TestData, map_bool_bool_round_trip) {
+    using MapT = std::map<bool, bool>;
+    TestData td;
+    MapT in{{true, false}, {false, true}};
+    td.write_map("bb", in);
+    auto got = td.read_map<MapT>("bb");
+    EXPECT_EQ(got, in);
+}
+
+TEST(TestData, map_empty_round_trip) {
+    using MapT = std::map<long long, long long>;
+    TestData td;
+    MapT in{};
+    td.write_map("e", in);
+    auto got = td.read_map<MapT>("e");
+    EXPECT_TRUE(got.empty());
+}
+
+// -----------------------------------------------------------------------------
+// Full on-disk round-trip with the new features
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// Objects - recursive TLV blobs holding a sub-TestData
+// -----------------------------------------------------------------------------
+
+TEST(TestData, object_with_scalars_and_arrays_round_trip) {
+    TestData td;
+    td.write_object("graph", [](TestData& g) {
+        g.write_value<long long>("numV", 100);
+        g.write_array<long long>("offsets", {0, 3, 5});
+        g.write_array<long long>("neighbors", {1, 2, 3, 0, 2});
+    });
+
+    TestData g = td.read_object("graph");
+    EXPECT_EQ(g.read_value<long long>("numV"), 100);
+    EXPECT_EQ(
+        g.read_array<long long>("offsets"),
+        (std::vector<long long>{0, 3, 5})
+    );
+    EXPECT_EQ(
+        g.read_array<long long>("neighbors"),
+        (std::vector<long long>{1, 2, 3, 0, 2})
+    );
+}
+
+TEST(TestData, object_with_string_and_map) {
+    using MapT = std::map<std::string, long long>;
+    TestData td;
+    td.write_object("doc", [](TestData& d) {
+        d.write_string("title", "hello world");
+        d.write_map("counts", MapT{{"a", 1}, {"b", 2}});
+    });
+
+    TestData d = td.read_object("doc");
+    EXPECT_EQ(d.read_string("title"), "hello world");
+    auto m = d.read_map<MapT>("counts");
+    EXPECT_EQ(m, (MapT{{"a", 1}, {"b", 2}}));
+}
+
+TEST(TestData, nested_objects_round_trip) {
+    TestData td;
+    td.write_object("scene", [](TestData& s) {
+        s.write_value<long long>("seed", 42);
+        s.write_object("graph", [](TestData& g) {
+            g.write_value<long long>("numV", 50);
+            g.write_array<long long>("offsets", {0, 2, 4});
+        });
+        s.write_object("points", [](TestData& p) {
+            p.write_array<double>("xs", {1.0, 2.0, 3.0});
+            p.write_array<double>("ys", {4.0, 5.0, 6.0});
+        });
+    });
+
+    TestData s = td.read_object("scene");
+    EXPECT_EQ(s.read_value<long long>("seed"), 42);
+
+    TestData g = s.read_object("graph");
+    EXPECT_EQ(g.read_value<long long>("numV"), 50);
+    EXPECT_EQ(g.read_array<long long>("offsets"), (std::vector<long long>{0, 2, 4}));
+
+    TestData p = s.read_object("points");
+    EXPECT_EQ(p.read_array<double>("xs"), (std::vector<double>{1.0, 2.0, 3.0}));
+    EXPECT_EQ(p.read_array<double>("ys"), (std::vector<double>{4.0, 5.0, 6.0}));
+}
+
+TEST(TestData, empty_object_round_trip) {
+    TestData td;
+    td.write_object("empty", [](TestData&) {});
+    TestData e = td.read_object("empty");
+    EXPECT_TRUE(e.empty());
+}
+
+TEST(TestData, object_survives_disk_round_trip) {
+    TempDir dir;
+    auto file = dir.path() / "object.bin";
+
+    TestData src;
+    src.write_object("graph", [](TestData& g) {
+        g.write_value<long long>("numV", 1000);
+        g.write_array<std::vector<long long>>("matrix", {{1, 2}, {3, 4, 5}});
+    });
+    src.save(file);
+
+    TestData loaded = TestData::load(file);
+    TestData g = loaded.read_object("graph");
+    EXPECT_EQ(g.read_value<long long>("numV"), 1000);
+    auto m = g.read_array<std::vector<long long>>("matrix");
+    EXPECT_EQ(m, (std::vector<std::vector<long long>>{{1, 2}, {3, 4, 5}}));
+}
+
+TEST(TestData, object_can_be_overwritten) {
+    TestData td;
+    td.write_object("o", [](TestData& s) { s.write_value<long long>("v", 1); });
+    td.write_object("o", [](TestData& s) { s.write_value<long long>("v", 999); });
+    TestData o = td.read_object("o");
+    EXPECT_EQ(o.read_value<long long>("v"), 999);
+}
+
+TEST(TestData, read_object_on_garbage_blob_throws) {
+    // Writing as scalar then reading as object should throw - the bytes are
+    // not a valid TLV stream.
+    TestData td;
+    td.write_value<long long>("not_an_object", 42);
+    EXPECT_THROW(td.read_object("not_an_object"), std::runtime_error);
+}
+
+TEST(TestData, save_load_round_trip_nested_and_map) {
+    using MatrixT = std::vector<std::vector<long long>>;
+    using CountsT = std::map<std::string, long long>;
+    TempDir dir;
+    auto file = dir.path() / "nested.bin";
+
+    MatrixT matrix{{1, 2}, {3, 4, 5}};
+    std::vector<Point2d> points{{1.0, 2.0}, {3.0, 4.0}};
+    CountsT counts{{"a", 1}, {"b", 2}};
+
+    TestData src;
+    src.write_array<std::vector<long long>>("matrix", matrix);
+    src.write_array<Point2d>("points", points);
+    src.write_map<CountsT>("counts", counts);
+    src.save(file);
+
+    TestData dst = TestData::load(file);
+    auto m = dst.read_array<std::vector<long long>>("matrix");
+    EXPECT_EQ(m, matrix);
+    auto p = dst.read_array<Point2d>("points");
+    EXPECT_EQ(p, points);
+    auto c = dst.read_map<CountsT>("counts");
+    EXPECT_EQ(c, counts);
 }
 
 TEST(TestData, load_throws_on_implausible_data_length) {

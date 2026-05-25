@@ -1,0 +1,7 @@
+{
+    "name": "TestData Format Round-Trip",
+    "mode": "correctness",
+    "allowedFrameworks": [],
+    "allowedPackages": [],
+    "correctnessMode": "monitor"
+}

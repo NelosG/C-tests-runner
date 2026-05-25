@@ -234,7 +234,10 @@ std::string CMakeGenerator::runner_cmake_lists(
             framework_block += "set(parlay_DIR \""
                 + normalize_path(parlay_cmake_dir.string()) + "\")\n";
             framework_block += "find_package(parlay CONFIG REQUIRED)\n";
-            framework_block += "target_link_libraries(runner_parlay PRIVATE parlay)\n";
+            // PUBLIC so the runner exe (which includes runner_parlay.h ->
+            // parlay/sequence.h to materialise the input sequence outside
+            // RUNNER_EXECUTE) sees parlay's include path.
+            framework_block += "target_link_libraries(runner_parlay PUBLIC parlay)\n";
         }
     } else if(framework == "cilk") {
         runner_variant = "runner_cilk";
